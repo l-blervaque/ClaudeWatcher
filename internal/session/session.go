@@ -49,6 +49,7 @@ type Session struct {
 	ProjectDir   string // encoded directory name
 	ProjectPath  string // decoded absolute path
 	ProjectName  string // last segment, human-readable
+	Title        string // first user prompt, used as session name
 	JSONLPath    string
 	LastModified time.Time
 	MessageCount int
@@ -71,12 +72,15 @@ func ProjectNameFromDir(name string) string {
 	return filepath.Base(decoded)
 }
 
-// jsonlLine is a minimal struct to extract role and cwd.
+// jsonlLine is a minimal struct to extract role, cwd, and content.
+// Content can be a string (real user prompt) or a list (tool results,
+// images, etc.) — we use json.RawMessage to inspect both shapes.
 type jsonlLine struct {
 	Type    string `json:"type"`
 	Cwd     string `json:"cwd"`
 	Message struct {
-		Role string `json:"role"`
+		Role    string          `json:"role"`
+		Content json.RawMessage `json:"content"`
 	} `json:"message"`
 }
 
@@ -85,6 +89,7 @@ type JSONLStats struct {
 	MessageCount int
 	LastRole     string
 	Cwd          string // real working directory, when present
+	FirstPrompt  string // first user message with string content
 }
 
 // ScanJSONL reads a session jsonl file and extracts stats.
@@ -113,6 +118,14 @@ func ScanJSONL(path string) (JSONLStats, error) {
 				stats.LastRole = l.Message.Role
 			} else {
 				stats.LastRole = l.Type
+			}
+			// First real user prompt = first user message whose content
+			// is a JSON string (lists are tool_result / multimodal).
+			if l.Type == "user" && stats.FirstPrompt == "" && len(l.Message.Content) > 0 && l.Message.Content[0] == '"' {
+				var s string
+				if json.Unmarshal(l.Message.Content, &s) == nil {
+					stats.FirstPrompt = s
+				}
 			}
 		}
 	}

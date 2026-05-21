@@ -168,15 +168,20 @@ func (m Model) renderList() string {
 	return b.String()
 }
 
-// renderListNarrow: two lines per session, fits in slim columns.
-//   ● project-name           2m
-//     d54dfca0 · 42 msgs
+// renderListNarrow: three lines per session, fits in slim columns.
+//   ● project-name                 2m
+//     "first user prompt truncated…"
+//     d54dfca0 · 42 msgs · active
 func (m Model) renderListNarrow() string {
 	var b strings.Builder
+
+	header := dimStyle.Render(fmt.Sprintf("%-*s", m.width, "STATUS  PROJECT / TITLE"))
+	b.WriteString(headerStyle.Render(header))
+	b.WriteString("\n")
+
 	for i, s := range m.sessions {
 		st := statusStyles[s.Status]
 		icon := st.Render(s.Status.Icon())
-		name := s.ProjectName
 		ago := humanizeAgo(s.LastModified)
 
 		// width budget for the project name on the first line
@@ -184,20 +189,31 @@ func (m Model) renderListNarrow() string {
 		if nameWidth < 8 {
 			nameWidth = 8
 		}
-		name = truncate(name, nameWidth)
+		name := truncate(s.ProjectName, nameWidth)
+
+		title := s.Title
+		if title == "" {
+			title = "(no prompt yet)"
+		}
+		title = truncate(title, m.width-4)
 
 		line1 := fmt.Sprintf("%s %-*s %s", icon, nameWidth, name, dimStyle.Render(ago))
-		line2 := fmt.Sprintf("  %s · %d msgs · %s",
+		line2 := fmt.Sprintf("  %s", title)
+		line3 := fmt.Sprintf("  %s · %d msgs · %s",
 			shortID(s.ID), s.MessageCount, st.Render(s.Status.Label()))
 
 		if i == m.cursor {
 			b.WriteString(selectedStyle.Render(padRight(stripANSI(line1), m.width)))
 			b.WriteString("\n")
 			b.WriteString(selectedStyle.Render(padRight(stripANSI(line2), m.width)))
+			b.WriteString("\n")
+			b.WriteString(selectedStyle.Render(padRight(stripANSI(line3), m.width)))
 		} else {
 			b.WriteString(line1)
 			b.WriteString("\n")
 			b.WriteString(dimStyle.Render(line2))
+			b.WriteString("\n")
+			b.WriteString(dimStyle.Render(line3))
 		}
 		b.WriteString("\n")
 	}
@@ -208,24 +224,29 @@ func (m Model) renderListNarrow() string {
 func (m Model) renderListWide() string {
 	var b strings.Builder
 
-	// columns: status(2) project(flex) id(10) msgs(5) ago(8)
-	idW, msgW, agoW := 10, 5, 8
-	projW := m.width - 2 /* status */ - idW - msgW - agoW - 4 /* spaces */
-	if projW < 12 {
-		projW = 12
+	// columns: status(2) project(20) title(flex) id(10) msgs(5) ago(8)
+	projW, idW, msgW, agoW := 20, 10, 5, 8
+	titleW := m.width - 2 /* status */ - projW - idW - msgW - agoW - 5 /* spaces */
+	if titleW < 10 {
+		titleW = 10
 	}
 
-	header := fmt.Sprintf("  %-*s %-*s %*s %*s",
-		projW, "PROJECT", idW, "ID", msgW, "MSGS", agoW, "AGE")
+	header := fmt.Sprintf("  %-*s %-*s %-*s %*s %*s",
+		projW, "PROJECT", titleW, "TITLE", idW, "ID", msgW, "MSGS", agoW, "AGE")
 	b.WriteString(headerStyle.Render(header))
 	b.WriteString("\n")
 
 	for i, s := range m.sessions {
 		st := statusStyles[s.Status]
 		icon := st.Render(s.Status.Icon())
-		row := fmt.Sprintf("%s %-*s %-*s %*d %*s",
+		title := s.Title
+		if title == "" {
+			title = "—"
+		}
+		row := fmt.Sprintf("%s %-*s %-*s %-*s %*d %*s",
 			icon,
 			projW, truncate(s.ProjectName, projW),
+			titleW, truncate(title, titleW),
 			idW, shortID(s.ID),
 			msgW, s.MessageCount,
 			agoW, humanizeAgo(s.LastModified))
@@ -250,6 +271,9 @@ func (m Model) renderDetail() string {
 	b.WriteString(fmt.Sprintf("Project:  %s\n", s.ProjectName))
 	b.WriteString(dimStyle.Render(fmt.Sprintf("Path:     %s\n", s.ProjectPath)))
 	b.WriteString(fmt.Sprintf("Session:  %s\n", s.ID))
+	if s.Title != "" {
+		b.WriteString(fmt.Sprintf("Title:    %s\n", s.Title))
+	}
 	b.WriteString(fmt.Sprintf("Status:   %s %s\n", st.Render(s.Status.Icon()), st.Render(s.Status.Label())))
 	b.WriteString(fmt.Sprintf("Messages: %d\n", s.MessageCount))
 	b.WriteString(fmt.Sprintf("Last:     %s (%s)\n", humanizeAgo(s.LastModified), s.LastModified.Format("2006-01-02 15:04:05")))

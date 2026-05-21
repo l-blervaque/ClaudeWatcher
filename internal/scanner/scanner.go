@@ -106,6 +106,7 @@ func Scan() ([]session.Session, error) {
 				ProjectDir:   projectDir,
 				ProjectPath:  path,
 				ProjectName:  name,
+				Title:        cleanTitle(stats.FirstPrompt),
 				JSONLPath:    jsonlPath,
 				LastModified: info.ModTime(),
 				MessageCount: stats.MessageCount,
@@ -117,4 +118,10 @@ func Scan() ([]session.Session, error) {
 	}
 
 	return sessions, nil
+}
+
+// cleanTitle collapses whitespace in the first user prompt and trims it.
+func cleanTitle(s string) string {
+	s = strings.Join(strings.Fields(s), " ")
+	return strings.TrimSpace(s)
 }
