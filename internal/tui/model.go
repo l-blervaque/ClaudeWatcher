@@ -27,9 +27,11 @@ var (
 			Foreground(lipgloss.Color("#888")).
 			Underline(true)
 
-	selectedStyle = lipgloss.NewStyle().
-			Foreground(lipgloss.Color("#000")).
-			Background(lipgloss.Color("#7D56F4"))
+	// Subtle left-edge marker instead of full-row highlight (was too
+	// loud and made the selected line hard to read).
+	cursorBarStyle = lipgloss.NewStyle().Foreground(lipgloss.Color("#7D56F4"))
+	cursorBar      = cursorBarStyle.Render("▌")
+	unselectedBar  = " "
 
 	dimStyle = lipgloss.NewStyle().Foreground(lipgloss.Color("#666"))
 
@@ -214,17 +216,20 @@ func (m Model) renderListNarrow() string {
 		line3 := fmt.Sprintf("  ctx %s · %d msgs · %s",
 			contextPct(s.ContextTokens), s.MessageCount, humanizeAgo(s.LastModified))
 
+		bar := unselectedBar
 		if i == m.cursor {
-			b.WriteString(selectedStyle.Render(padRight(stripANSI(line1), m.width)))
-			b.WriteString("\n")
-			b.WriteString(selectedStyle.Render(padRight(stripANSI(line2), m.width)))
-			b.WriteString("\n")
-			b.WriteString(selectedStyle.Render(padRight(stripANSI(line3), m.width)))
+			bar = cursorBar
+		}
+		b.WriteString(bar)
+		b.WriteString(line1)
+		b.WriteString("\n")
+		b.WriteString(bar)
+		b.WriteString(line2)
+		b.WriteString("\n")
+		b.WriteString(bar)
+		if i == m.cursor {
+			b.WriteString(line3)
 		} else {
-			b.WriteString(line1)
-			b.WriteString("\n")
-			b.WriteString(line2)
-			b.WriteString("\n")
 			b.WriteString(dimStyle.Render(line3))
 		}
 		b.WriteString("\n")
@@ -263,11 +268,12 @@ func (m Model) renderListWide() string {
 			msgW, s.MessageCount,
 			agoW, humanizeAgo(s.LastModified))
 
+		bar := unselectedBar
 		if i == m.cursor {
-			b.WriteString(selectedStyle.Render(padRight(stripANSI(row), m.width)))
-		} else {
-			b.WriteString(row)
+			bar = cursorBar
 		}
+		b.WriteString(bar)
+		b.WriteString(row)
 		b.WriteString("\n")
 	}
 	return b.String()
