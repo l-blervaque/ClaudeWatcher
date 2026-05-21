@@ -102,6 +102,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		if m.options {
 			switch msg.String() {
 			case "q", "ctrl+c":
+				config.Save(m.cfg) //nolint:errcheck
 				return m, tea.Quit
 			case "j", "down":
 				if m.optCursor < 1 {
@@ -118,11 +119,16 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				case 1:
 					if m.cfg.SoundEnabled {
 						sounds := []string{"glass", "ping", "funk"}
+						found := false
 						for i, s := range sounds {
 							if s == m.cfg.SoundName {
 								m.cfg.SoundName = sounds[(i+1)%len(sounds)]
+								found = true
 								break
 							}
+						}
+						if !found {
+							m.cfg.SoundName = sounds[0]
 						}
 					}
 				}
