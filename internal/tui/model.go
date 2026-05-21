@@ -9,6 +9,7 @@ import (
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/lipgloss"
 
+	"github.com/ludo/claudewatcher/internal/config"
 	"github.com/ludo/claudewatcher/internal/scanner"
 	"github.com/ludo/claudewatcher/internal/session"
 )
@@ -60,11 +61,19 @@ type Model struct {
 	height       int
 	err          error
 	detail       bool
-	includeEnded bool // toggle with 'a'
+	includeEnded bool
+	options      bool
+	optCursor    int
+	cfg          config.Config
+	prevStatus   map[string]session.Status
 }
 
 func NewModel() Model {
-	return Model{}
+	cfg, _ := config.Load()
+	return Model{
+		cfg:        cfg,
+		prevStatus: make(map[string]session.Status),
+	}
 }
 
 func (m Model) Init() tea.Cmd {
@@ -90,6 +99,39 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.width = msg.Width
 		m.height = msg.Height
 	case tea.KeyMsg:
+		if m.options {
+			switch msg.String() {
+			case "q", "ctrl+c":
+				return m, tea.Quit
+			case "j", "down":
+				if m.optCursor < 1 {
+					m.optCursor++
+				}
+			case "k", "up":
+				if m.optCursor > 0 {
+					m.optCursor--
+				}
+			case " ", "enter":
+				switch m.optCursor {
+				case 0:
+					m.cfg.SoundEnabled = !m.cfg.SoundEnabled
+				case 1:
+					if m.cfg.SoundEnabled {
+						sounds := []string{"glass", "ping", "funk"}
+						for i, s := range sounds {
+							if s == m.cfg.SoundName {
+								m.cfg.SoundName = sounds[(i+1)%len(sounds)]
+								break
+							}
+						}
+					}
+				}
+			case "esc":
+				m.options = false
+				config.Save(m.cfg) //nolint:errcheck
+			}
+			return m, nil
+		}
 		switch msg.String() {
 		case "q", "ctrl+c":
 			return m, tea.Quit
@@ -106,6 +148,10 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		case "a":
 			m.includeEnded = !m.includeEnded
 			return m, loadSessions(m.includeEnded)
+		case "o":
+			if !m.detail {
+				m.options = true
+			}
 		case "enter":
 			m.detail = !m.detail
 		case "esc":
@@ -146,10 +192,59 @@ func (m Model) View() string {
 	if m.width == 0 {
 		return "Loading..."
 	}
+	if m.options {
+		return m.renderOptions()
+	}
 	if m.detail && len(m.sessions) > 0 {
 		return m.renderDetail()
 	}
 	return m.renderList()
+}
+
+func (m Model) renderOptions() string {
+	var b strings.Builder
+	b.WriteString(titleStyle.Render("Options"))
+	b.WriteString("\n\n")
+	b.WriteString(headerStyle.Render("Sons"))
+	b.WriteString("\n")
+
+	check := "[ ]"
+	if m.cfg.SoundEnabled {
+		check = "[x]"
+	}
+	bar0, bar1 := unselectedBar, unselectedBar
+	if m.optCursor == 0 {
+		bar0 = cursorBar
+	} else {
+		bar1 = cursorBar
+	}
+
+	b.WriteString(bar0)
+	b.WriteString(fmt.Sprintf(" %s Activé\n", check))
+
+	sounds := []string{"glass", "ping", "funk"}
+	labels := []string{"Glass", "Ping", "Funk"}
+	var sl strings.Builder
+	for i, name := range sounds {
+		if name == m.cfg.SoundName {
+			sl.WriteString(fmt.Sprintf("[%s]", labels[i]))
+		} else {
+			sl.WriteString(labels[i])
+		}
+		if i < len(sounds)-1 {
+			sl.WriteString("  ")
+		}
+	}
+	line1 := fmt.Sprintf(" Son : %s", sl.String())
+	b.WriteString(bar1)
+	if m.cfg.SoundEnabled {
+		b.WriteString(line1)
+	} else {
+		b.WriteString(dimStyle.Render(line1))
+	}
+	b.WriteString("\n\n")
+	b.WriteString(dimStyle.Render("esc fermer · j/k nav · espace/enter toggle"))
+	return b.String()
 }
 
 func (m Model) renderList() string {
@@ -174,7 +269,7 @@ func (m Model) renderList() string {
 	}
 
 	b.WriteString("\n")
-	b.WriteString(dimStyle.Render("j/k nav · enter detail · a all/open · r refresh · q quit"))
+	b.WriteString(dimStyle.Render("j/k nav · enter detail · o options · a all/open · r refresh · q quit"))
 	return b.String()
 }
 
