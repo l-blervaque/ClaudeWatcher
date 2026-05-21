@@ -19,6 +19,12 @@ const refreshInterval = 2 * time.Second
 
 // ---- styles ----
 
+// availableSounds is the ordered list of sound names the user can cycle through.
+// It is the single source of truth for both the options panel and the Update handler.
+var availableSounds = []string{"glass", "ping", "funk"}
+
+var soundLabels = []string{"Glass", "Ping", "Funk"}
+
 var (
 	titleStyle = lipgloss.NewStyle().
 			Bold(true).
@@ -119,17 +125,16 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 					m.cfg.SoundEnabled = !m.cfg.SoundEnabled
 				case 1:
 					if m.cfg.SoundEnabled {
-						sounds := []string{"glass", "ping", "funk"}
 						found := false
-						for i, s := range sounds {
+						for i, s := range availableSounds {
 							if s == m.cfg.SoundName {
-								m.cfg.SoundName = sounds[(i+1)%len(sounds)]
+								m.cfg.SoundName = availableSounds[(i+1)%len(availableSounds)]
 								found = true
 								break
 							}
 						}
 						if !found {
-							m.cfg.SoundName = sounds[0]
+							m.cfg.SoundName = availableSounds[0]
 						}
 					}
 				}
@@ -237,16 +242,14 @@ func (m Model) renderOptions() string {
 	b.WriteString(bar0)
 	b.WriteString(fmt.Sprintf(" %s Activé\n", check))
 
-	sounds := []string{"glass", "ping", "funk"}
-	labels := []string{"Glass", "Ping", "Funk"}
 	var sl strings.Builder
-	for i, name := range sounds {
+	for i, name := range availableSounds {
 		if name == m.cfg.SoundName {
-			sl.WriteString(fmt.Sprintf("[%s]", labels[i]))
+			sl.WriteString(fmt.Sprintf("[%s]", soundLabels[i]))
 		} else {
-			sl.WriteString(labels[i])
+			sl.WriteString(soundLabels[i])
 		}
-		if i < len(sounds)-1 {
+		if i < len(availableSounds)-1 {
 			sl.WriteString("  ")
 		}
 	}
