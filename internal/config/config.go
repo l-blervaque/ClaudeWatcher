@@ -1,8 +1,9 @@
-// internal/config/config.go
 package config
 
 import (
 	"encoding/json"
+	"errors"
+	"io/fs"
 	"os"
 	"path/filepath"
 )
@@ -31,7 +32,7 @@ func Load() (Config, error) {
 		return defaults, err
 	}
 	data, err := os.ReadFile(path)
-	if os.IsNotExist(err) {
+	if errors.Is(err, fs.ErrNotExist) {
 		return defaults, nil
 	}
 	if err != nil {
