@@ -52,12 +52,13 @@ type sessionsMsg struct {
 // ---- model ----
 
 type Model struct {
-	sessions []session.Session
-	cursor   int
-	width    int
-	height   int
-	err      error
-	detail   bool
+	sessions     []session.Session
+	cursor       int
+	width        int
+	height       int
+	err          error
+	detail       bool
+	includeEnded bool // toggle with 'a'
 }
 
 func NewModel() Model {
@@ -65,12 +66,12 @@ func NewModel() Model {
 }
 
 func (m Model) Init() tea.Cmd {
-	return tea.Batch(loadSessions(), tick())
+	return tea.Batch(loadSessions(m.includeEnded), tick())
 }
 
-func loadSessions() tea.Cmd {
+func loadSessions(includeEnded bool) tea.Cmd {
 	return func() tea.Msg {
-		s, err := scanner.Scan()
+		s, err := scanner.Scan(scanner.ScanOptions{IncludeEnded: includeEnded})
 		return sessionsMsg{sessions: s, err: err}
 	}
 }
@@ -99,14 +100,17 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				m.cursor--
 			}
 		case "r":
-			return m, loadSessions()
+			return m, loadSessions(m.includeEnded)
+		case "a":
+			m.includeEnded = !m.includeEnded
+			return m, loadSessions(m.includeEnded)
 		case "enter":
 			m.detail = !m.detail
 		case "esc":
 			m.detail = false
 		}
 	case tickMsg:
-		return m, tea.Batch(loadSessions(), tick())
+		return m, tea.Batch(loadSessions(m.includeEnded), tick())
 	case sessionsMsg:
 		m.err = msg.err
 		m.sessions = sortSessions(msg.sessions)
@@ -152,7 +156,11 @@ func (m Model) renderList() string {
 	header := titleStyle.Render("ClaudeWatcher")
 	b.WriteString(header)
 	b.WriteString("  ")
-	b.WriteString(dimStyle.Render(fmt.Sprintf("%d sessions", len(m.sessions))))
+	mode := "open"
+	if m.includeEnded {
+		mode = "all"
+	}
+	b.WriteString(dimStyle.Render(fmt.Sprintf("%d sessions · %s", len(m.sessions), mode)))
 	b.WriteString("\n\n")
 
 	narrow := m.width < 80
@@ -164,7 +172,7 @@ func (m Model) renderList() string {
 	}
 
 	b.WriteString("\n")
-	b.WriteString(dimStyle.Render("j/k navigate · enter detail · r refresh · q quit"))
+	b.WriteString(dimStyle.Render("j/k nav · enter detail · a all/open · r refresh · q quit"))
 	return b.String()
 }
 

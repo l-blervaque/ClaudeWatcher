@@ -4,6 +4,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"sort"
 	"strings"
 	"time"
 
@@ -19,37 +20,46 @@ func projectsRoot() (string, error) {
 	return filepath.Join(home, ".claude", "projects"), nil
 }
 
-// runningProjectDirs returns the set of project paths (decoded) currently
-// associated with a live `claude` process. We use `ps` and grep for cwd-like
-// args; this is a coarse heuristic.
-//
-// Strategy: list `claude` processes and for each, read its cwd via lsof.
-// Falls back to an empty set if anything fails.
-func runningProjectDirs() map[string]bool {
-	out := map[string]bool{}
-
-	psOut, err := exec.Command("pgrep", "-f", "claude").Output()
+// runningClaudeCwds returns the cwd of each live `claude` CLI process,
+// as a slice (one entry per process — duplicates kept so callers can
+// count how many sessions are open per project).
+func runningClaudeCwds() []string {
+	// `pgrep -x claude` matches the exact executable name, avoiding
+	// the Claude.app desktop helper processes.
+	out, err := exec.Command("pgrep", "-x", "claude").Output()
 	if err != nil {
-		return out
+		return nil
 	}
-	pids := strings.Fields(string(psOut))
+	pids := strings.Fields(string(out))
+
+	var cwds []string
 	for _, pid := range pids {
-		// lsof -a -p PID -d cwd -Fn  → outputs lines like "n/path/to/cwd"
 		lo, err := exec.Command("lsof", "-a", "-p", pid, "-d", "cwd", "-Fn").Output()
 		if err != nil {
 			continue
 		}
 		for _, line := range strings.Split(string(lo), "\n") {
 			if strings.HasPrefix(line, "n/") {
-				out[strings.TrimPrefix(line, "n")] = true
+				cwds = append(cwds, strings.TrimPrefix(line, "n"))
 			}
 		}
 	}
-	return out
+	return cwds
 }
 
-// Scan walks ~/.claude/projects and returns one Session per .jsonl file.
-func Scan() ([]session.Session, error) {
+// ScanOptions controls how Scan filters sessions.
+type ScanOptions struct {
+	// IncludeEnded: when true, return sessions with no associated running
+	// claude process. Default false — we only want sessions actually open.
+	IncludeEnded bool
+}
+
+// Scan walks ~/.claude/projects and returns sessions.
+//
+// By default only sessions associated with a running `claude` process
+// are returned. For each project with N running processes, the N most
+// recently modified jsonl files are matched to those processes.
+func Scan(opts ScanOptions) ([]session.Session, error) {
 	root, err := projectsRoot()
 	if err != nil {
 		return nil, err
@@ -60,10 +70,13 @@ func Scan() ([]session.Session, error) {
 		return nil, err
 	}
 
-	activeCwds := runningProjectDirs()
+	procCount := map[string]int{}
+	for _, cwd := range runningClaudeCwds() {
+		procCount[cwd]++
+	}
 	now := time.Now()
 
-	var sessions []session.Session
+	var all []session.Session
 	for _, entry := range entries {
 		if !entry.IsDir() {
 			continue
@@ -89,19 +102,16 @@ func Scan() ([]session.Session, error) {
 			stats, _ := session.ScanJSONL(jsonlPath)
 			id := strings.TrimSuffix(f.Name(), ".jsonl")
 
-			// Prefer the cwd recorded in the jsonl — it's authoritative.
-			// Decoding the folder name is ambiguous because "-" in the
-			// original path is indistinguishable from a "/" separator.
+			// Prefer the real cwd from the jsonl — folder-name decoding
+			// is ambiguous on "-" vs "/" boundaries.
 			path := projectPath
 			name := projectName
 			if stats.Cwd != "" {
 				path = stats.Cwd
 				name = filepath.Base(stats.Cwd)
 			}
-			hasProc := activeCwds[path]
-			status := session.DetermineStatus(hasProc, info.ModTime(), stats.LastRole, now)
 
-			sessions = append(sessions, session.Session{
+			all = append(all, session.Session{
 				ID:           id,
 				ProjectDir:   projectDir,
 				ProjectPath:  path,
@@ -111,13 +121,41 @@ func Scan() ([]session.Session, error) {
 				LastModified: info.ModTime(),
 				MessageCount: stats.MessageCount,
 				LastRole:     stats.LastRole,
-				Status:       status,
-				HasProcess:   hasProc,
 			})
 		}
 	}
 
-	return sessions, nil
+	// Group by project, mark the top-N most-recent jsonl as having a
+	// process, where N = number of running claude processes in that cwd.
+	byPath := map[string][]int{}
+	for i, s := range all {
+		byPath[s.ProjectPath] = append(byPath[s.ProjectPath], i)
+	}
+	for path, idxs := range byPath {
+		n := procCount[path]
+		if n == 0 {
+			continue
+		}
+		sort.Slice(idxs, func(a, b int) bool {
+			return all[idxs[a]].LastModified.After(all[idxs[b]].LastModified)
+		})
+		if n > len(idxs) {
+			n = len(idxs)
+		}
+		for _, i := range idxs[:n] {
+			all[i].HasProcess = true
+		}
+	}
+
+	out := make([]session.Session, 0, len(all))
+	for _, s := range all {
+		s.Status = session.DetermineStatus(s.HasProcess, s.LastModified, s.LastRole, now)
+		if !opts.IncludeEnded && s.Status == session.StatusEnded {
+			continue
+		}
+		out = append(out, s)
+	}
+	return out, nil
 }
 
 // cleanTitle collapses whitespace in the first user prompt and trims it.
