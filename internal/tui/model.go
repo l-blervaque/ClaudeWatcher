@@ -176,34 +176,43 @@ func (m Model) renderList() string {
 	return b.String()
 }
 
-// renderListNarrow: three lines per session, fits in slim columns.
-//   ● project-name                 2m
-//     "session title"
-//     ctx 46% · 42 msgs · active
+// renderListNarrow: three lines per session.
+//   ● Session title ················· active
+//     customer-biogen
+//     ctx 46% · 42 msgs · 2m
 func (m Model) renderListNarrow() string {
 	var b strings.Builder
 
 	for i, s := range m.sessions {
 		st := statusStyles[s.Status]
 		icon := st.Render(s.Status.Icon())
-		ago := humanizeAgo(s.LastModified)
-
-		nameWidth := m.width - 4 - len(ago) - 1
-		if nameWidth < 8 {
-			nameWidth = 8
-		}
-		name := truncate(s.ProjectName, nameWidth)
 
 		title := s.Title
 		if title == "" {
 			title = "(no title)"
 		}
-		title = truncate(title, m.width-4)
+		status := s.Status.Label()
 
-		line1 := fmt.Sprintf("%s %-*s %s", icon, nameWidth, name, dimStyle.Render(ago))
-		line2 := fmt.Sprintf("  %s", title)
+		// line 1: icon + title ··· status, with dotted leader
+		// budget: width - 2 (icon+space) - len(status) - 1 (space before status)
+		leftBudget := m.width - 2 - len(status) - 1
+		if leftBudget < 8 {
+			leftBudget = 8
+		}
+		title = truncate(title, leftBudget-2) // room for at least 2 dots
+		fillN := leftBudget - len(title) - 1   // 1 = space after title
+		if fillN < 1 {
+			fillN = 1
+		}
+		line1 := fmt.Sprintf("%s %s %s %s",
+			icon,
+			title,
+			dimStyle.Render(strings.Repeat("·", fillN)),
+			st.Render(status))
+
+		line2 := fmt.Sprintf("  %s", truncate(s.ProjectName, m.width-2))
 		line3 := fmt.Sprintf("  ctx %s · %d msgs · %s",
-			contextPct(s.ContextTokens), s.MessageCount, st.Render(s.Status.Label()))
+			contextPct(s.ContextTokens), s.MessageCount, humanizeAgo(s.LastModified))
 
 		if i == m.cursor {
 			b.WriteString(selectedStyle.Render(padRight(stripANSI(line1), m.width)))
@@ -214,7 +223,7 @@ func (m Model) renderListNarrow() string {
 		} else {
 			b.WriteString(line1)
 			b.WriteString("\n")
-			b.WriteString(dimStyle.Render(line2))
+			b.WriteString(line2)
 			b.WriteString("\n")
 			b.WriteString(dimStyle.Render(line3))
 		}
