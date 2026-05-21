@@ -9,6 +9,7 @@ import (
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/lipgloss"
 
+	"github.com/ludo/claudewatcher/internal/audio"
 	"github.com/ludo/claudewatcher/internal/config"
 	"github.com/ludo/claudewatcher/internal/scanner"
 	"github.com/ludo/claudewatcher/internal/session"
@@ -167,7 +168,15 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return m, tea.Batch(loadSessions(m.includeEnded), tick())
 	case sessionsMsg:
 		m.err = msg.err
-		m.sessions = sortSessions(msg.sessions)
+		newSessions := sortSessions(msg.sessions)
+		if m.cfg.SoundEnabled && detectTransitions(m.prevStatus, newSessions) {
+			audio.Play(m.cfg.SoundName)
+		}
+		m.prevStatus = make(map[string]session.Status, len(newSessions))
+		for _, s := range newSessions {
+			m.prevStatus[s.ID] = s.Status
+		}
+		m.sessions = newSessions
 		if m.cursor >= len(m.sessions) {
 			m.cursor = len(m.sessions) - 1
 		}
