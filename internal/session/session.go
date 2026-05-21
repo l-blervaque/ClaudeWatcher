@@ -45,18 +45,28 @@ func (s Status) Label() string {
 }
 
 type Session struct {
-	ID           string
-	ProjectDir   string // encoded directory name
-	ProjectPath  string // decoded absolute path
-	ProjectName  string // last segment, human-readable
-	Title        string // first user prompt, used as session name
-	JSONLPath    string
-	LastModified time.Time
-	MessageCount int
-	LastRole     string // "user" or "assistant"
-	Status       Status
-	HasProcess   bool
+	ID            string
+	ProjectDir    string
+	ProjectPath   string
+	ProjectName   string
+	Title         string // resolved display name
+	TitleSource   string // "custom" | "ai" | "prompt" | ""
+	CustomTitle   string
+	AiTitle       string
+	FirstPrompt   string
+	JSONLPath     string
+	LastModified  time.Time
+	MessageCount  int
+	LastRole      string
+	ContextTokens int
+	LastAssistant string
+	Status        Status
+	HasProcess    bool
 }
+
+// ContextWindow is the assumed model context size for the % calculation.
+// Claude Sonnet/Opus default = 200K tokens.
+const ContextWindow = 200_000
 
 // DecodeProjectDir converts "-Users-ludo-foo-bar" into "/Users/ludo/foo/bar".
 // Claude Code encodes the cwd by replacing "/" with "-".
@@ -72,24 +82,34 @@ func ProjectNameFromDir(name string) string {
 	return filepath.Base(decoded)
 }
 
-// jsonlLine is a minimal struct to extract role, cwd, and content.
-// Content can be a string (real user prompt) or a list (tool results,
-// images, etc.) — we use json.RawMessage to inspect both shapes.
+// jsonlLine is a minimal struct to extract everything we care about.
 type jsonlLine struct {
-	Type    string `json:"type"`
-	Cwd     string `json:"cwd"`
-	Message struct {
+	Type        string `json:"type"`
+	Cwd         string `json:"cwd"`
+	CustomTitle string `json:"customTitle"`
+	AiTitle     string `json:"aiTitle"`
+	Message     struct {
 		Role    string          `json:"role"`
 		Content json.RawMessage `json:"content"`
+		Usage   struct {
+			InputTokens              int `json:"input_tokens"`
+			CacheCreationInputTokens int `json:"cache_creation_input_tokens"`
+			CacheReadInputTokens     int `json:"cache_read_input_tokens"`
+			OutputTokens             int `json:"output_tokens"`
+		} `json:"usage"`
 	} `json:"message"`
 }
 
 // JSONLStats holds the extracted metadata from a session jsonl file.
 type JSONLStats struct {
-	MessageCount int
-	LastRole     string
-	Cwd          string // real working directory, when present
-	FirstPrompt  string // first user message with string content
+	MessageCount    int
+	LastRole        string
+	Cwd             string // real working directory
+	FirstPrompt     string // first user message with string content
+	CustomTitle     string // last /rename value
+	AiTitle         string // last auto-generated title
+	ContextTokens   int    // last known total tokens in context (input + cache_read + cache_creation)
+	LastAssistant   string // text of the last assistant message
 }
 
 // ScanJSONL reads a session jsonl file and extracts stats.
@@ -112,6 +132,13 @@ func ScanJSONL(path string) (JSONLStats, error) {
 		if l.Cwd != "" && stats.Cwd == "" {
 			stats.Cwd = l.Cwd
 		}
+		// Titles: last one wins (user can /rename multiple times).
+		if l.Type == "custom-title" && l.CustomTitle != "" {
+			stats.CustomTitle = l.CustomTitle
+		}
+		if l.Type == "ai-title" && l.AiTitle != "" {
+			stats.AiTitle = l.AiTitle
+		}
 		if l.Type == "user" || l.Type == "assistant" {
 			stats.MessageCount++
 			if l.Message.Role != "" {
@@ -127,9 +154,40 @@ func ScanJSONL(path string) (JSONLStats, error) {
 					stats.FirstPrompt = s
 				}
 			}
+			// Track last assistant context size + text.
+			if l.Type == "assistant" {
+				u := l.Message.Usage
+				if total := u.InputTokens + u.CacheCreationInputTokens + u.CacheReadInputTokens; total > 0 {
+					stats.ContextTokens = total
+				}
+				if text := extractAssistantText(l.Message.Content); text != "" {
+					stats.LastAssistant = text
+				}
+			}
 		}
 	}
 	return stats, scanner.Err()
+}
+
+// extractAssistantText pulls the first text block from an assistant
+// message content array. Returns "" if content is not a list or has no text.
+func extractAssistantText(raw json.RawMessage) string {
+	if len(raw) == 0 || raw[0] != '[' {
+		return ""
+	}
+	var blocks []struct {
+		Type string `json:"type"`
+		Text string `json:"text"`
+	}
+	if err := json.Unmarshal(raw, &blocks); err != nil {
+		return ""
+	}
+	for _, b := range blocks {
+		if b.Type == "text" && b.Text != "" {
+			return b.Text
+		}
+	}
+	return ""
 }
 
 // DetermineStatus computes a session's status given:

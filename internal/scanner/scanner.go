@@ -111,16 +111,23 @@ func Scan(opts ScanOptions) ([]session.Session, error) {
 				name = filepath.Base(stats.Cwd)
 			}
 
+			title, source := resolveTitle(stats)
 			all = append(all, session.Session{
-				ID:           id,
-				ProjectDir:   projectDir,
-				ProjectPath:  path,
-				ProjectName:  name,
-				Title:        cleanTitle(stats.FirstPrompt),
-				JSONLPath:    jsonlPath,
-				LastModified: info.ModTime(),
-				MessageCount: stats.MessageCount,
-				LastRole:     stats.LastRole,
+				ID:            id,
+				ProjectDir:    projectDir,
+				ProjectPath:   path,
+				ProjectName:   name,
+				Title:         title,
+				TitleSource:   source,
+				CustomTitle:   stats.CustomTitle,
+				AiTitle:       stats.AiTitle,
+				FirstPrompt:   cleanTitle(stats.FirstPrompt),
+				JSONLPath:     jsonlPath,
+				LastModified:  info.ModTime(),
+				MessageCount:  stats.MessageCount,
+				LastRole:      stats.LastRole,
+				ContextTokens: stats.ContextTokens,
+				LastAssistant: stats.LastAssistant,
 			})
 		}
 	}
@@ -158,8 +165,23 @@ func Scan(opts ScanOptions) ([]session.Session, error) {
 	return out, nil
 }
 
-// cleanTitle collapses whitespace in the first user prompt and trims it.
+// cleanTitle collapses whitespace and trims.
 func cleanTitle(s string) string {
 	s = strings.Join(strings.Fields(s), " ")
 	return strings.TrimSpace(s)
+}
+
+// resolveTitle picks the best display title and reports its source.
+// Priority: /rename > AI-generated > first user prompt.
+func resolveTitle(s session.JSONLStats) (string, string) {
+	if t := cleanTitle(s.CustomTitle); t != "" {
+		return t, "custom"
+	}
+	if t := cleanTitle(s.AiTitle); t != "" {
+		return t, "ai"
+	}
+	if t := cleanTitle(s.FirstPrompt); t != "" {
+		return t, "prompt"
+	}
+	return "", ""
 }

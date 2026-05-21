@@ -178,22 +178,17 @@ func (m Model) renderList() string {
 
 // renderListNarrow: three lines per session, fits in slim columns.
 //   ● project-name                 2m
-//     "first user prompt truncated…"
-//     d54dfca0 · 42 msgs · active
+//     "session title"
+//     ctx 46% · 42 msgs · active
 func (m Model) renderListNarrow() string {
 	var b strings.Builder
-
-	header := dimStyle.Render(fmt.Sprintf("%-*s", m.width, "STATUS  PROJECT / TITLE"))
-	b.WriteString(headerStyle.Render(header))
-	b.WriteString("\n")
 
 	for i, s := range m.sessions {
 		st := statusStyles[s.Status]
 		icon := st.Render(s.Status.Icon())
 		ago := humanizeAgo(s.LastModified)
 
-		// width budget for the project name on the first line
-		nameWidth := m.width - 4 /* icon+spaces */ - len(ago) - 1
+		nameWidth := m.width - 4 - len(ago) - 1
 		if nameWidth < 8 {
 			nameWidth = 8
 		}
@@ -201,14 +196,14 @@ func (m Model) renderListNarrow() string {
 
 		title := s.Title
 		if title == "" {
-			title = "(no prompt yet)"
+			title = "(no title)"
 		}
 		title = truncate(title, m.width-4)
 
 		line1 := fmt.Sprintf("%s %-*s %s", icon, nameWidth, name, dimStyle.Render(ago))
 		line2 := fmt.Sprintf("  %s", title)
-		line3 := fmt.Sprintf("  %s · %d msgs · %s",
-			shortID(s.ID), s.MessageCount, st.Render(s.Status.Label()))
+		line3 := fmt.Sprintf("  ctx %s · %d msgs · %s",
+			contextPct(s.ContextTokens), s.MessageCount, st.Render(s.Status.Label()))
 
 		if i == m.cursor {
 			b.WriteString(selectedStyle.Render(padRight(stripANSI(line1), m.width)))
@@ -232,15 +227,15 @@ func (m Model) renderListNarrow() string {
 func (m Model) renderListWide() string {
 	var b strings.Builder
 
-	// columns: status(2) project(20) title(flex) id(10) msgs(5) ago(8)
-	projW, idW, msgW, agoW := 20, 10, 5, 8
-	titleW := m.width - 2 /* status */ - projW - idW - msgW - agoW - 5 /* spaces */
+	// columns: status(2) project(20) title(flex) ctx(5) msgs(5) ago(8)
+	projW, ctxW, msgW, agoW := 20, 5, 5, 8
+	titleW := m.width - 2 - projW - ctxW - msgW - agoW - 5
 	if titleW < 10 {
 		titleW = 10
 	}
 
-	header := fmt.Sprintf("  %-*s %-*s %-*s %*s %*s",
-		projW, "PROJECT", titleW, "TITLE", idW, "ID", msgW, "MSGS", agoW, "AGE")
+	header := fmt.Sprintf("  %-*s %-*s %*s %*s %*s",
+		projW, "PROJECT", titleW, "TITLE", ctxW, "CTX", msgW, "MSGS", agoW, "AGE")
 	b.WriteString(headerStyle.Render(header))
 	b.WriteString("\n")
 
@@ -251,11 +246,11 @@ func (m Model) renderListWide() string {
 		if title == "" {
 			title = "—"
 		}
-		row := fmt.Sprintf("%s %-*s %-*s %-*s %*d %*s",
+		row := fmt.Sprintf("%s %-*s %-*s %*s %*d %*s",
 			icon,
 			projW, truncate(s.ProjectName, projW),
 			titleW, truncate(title, titleW),
-			idW, shortID(s.ID),
+			ctxW, contextPct(s.ContextTokens),
 			msgW, s.MessageCount,
 			agoW, humanizeAgo(s.LastModified))
 
@@ -276,18 +271,47 @@ func (m Model) renderDetail() string {
 	var b strings.Builder
 	b.WriteString(titleStyle.Render("Session detail"))
 	b.WriteString("\n\n")
+
+	// Project + status
 	b.WriteString(fmt.Sprintf("Project:  %s\n", s.ProjectName))
-	b.WriteString(dimStyle.Render(fmt.Sprintf("Path:     %s\n", s.ProjectPath)))
-	b.WriteString(fmt.Sprintf("Session:  %s\n", s.ID))
-	if s.Title != "" {
-		b.WriteString(fmt.Sprintf("Title:    %s\n", s.Title))
-	}
+	b.WriteString(dimStyle.Render(fmt.Sprintf("          %s\n", s.ProjectPath)))
 	b.WriteString(fmt.Sprintf("Status:   %s %s\n", st.Render(s.Status.Icon()), st.Render(s.Status.Label())))
-	b.WriteString(fmt.Sprintf("Messages: %d\n", s.MessageCount))
-	b.WriteString(fmt.Sprintf("Last:     %s (%s)\n", humanizeAgo(s.LastModified), s.LastModified.Format("2006-01-02 15:04:05")))
-	b.WriteString(fmt.Sprintf("LastRole: %s\n", s.LastRole))
-	b.WriteString(fmt.Sprintf("Process:  %v\n", s.HasProcess))
-	b.WriteString(dimStyle.Render(fmt.Sprintf("JSONL:    %s\n", s.JSONLPath)))
+	b.WriteString(fmt.Sprintf("Session:  %s\n", s.ID))
+
+	// Titles — show source breakdown so user sees /rename vs ai-title vs prompt
+	b.WriteString("\n")
+	b.WriteString(headerStyle.Render("Titles"))
+	b.WriteString("\n")
+	if s.CustomTitle != "" {
+		b.WriteString(fmt.Sprintf("  /rename:  %s\n", s.CustomTitle))
+	}
+	if s.AiTitle != "" {
+		b.WriteString(fmt.Sprintf("  ai-title: %s\n", s.AiTitle))
+	}
+	if s.FirstPrompt != "" {
+		b.WriteString(fmt.Sprintf("  prompt:   %s\n", truncate(s.FirstPrompt, m.width-12)))
+	}
+
+	// Stats
+	b.WriteString("\n")
+	b.WriteString(headerStyle.Render("Stats"))
+	b.WriteString("\n")
+	b.WriteString(fmt.Sprintf("  Context:  %s (%d / %d tokens)\n",
+		contextPct(s.ContextTokens), s.ContextTokens, session.ContextWindow))
+	b.WriteString(fmt.Sprintf("  Messages: %d\n", s.MessageCount))
+	b.WriteString(fmt.Sprintf("  Last:     %s (%s)\n",
+		humanizeAgo(s.LastModified), s.LastModified.Format("2006-01-02 15:04:05")))
+
+	// Last assistant message preview
+	if s.LastAssistant != "" {
+		b.WriteString("\n")
+		b.WriteString(headerStyle.Render("Last message"))
+		b.WriteString("\n")
+		b.WriteString(wrapPreview(s.LastAssistant, m.width-2, 8))
+	}
+
+	b.WriteString("\n")
+	b.WriteString(dimStyle.Render(fmt.Sprintf("jsonl: %s\n", s.JSONLPath)))
 	b.WriteString("\n")
 	b.WriteString(dimStyle.Render("enter/esc back · q quit"))
 	return b.String()
@@ -314,6 +338,36 @@ func shortID(id string) string {
 		return id[:8]
 	}
 	return id
+}
+
+// contextPct returns the context usage as "46%" (or "—" if unknown).
+func contextPct(tokens int) string {
+	if tokens <= 0 {
+		return "—"
+	}
+	pct := tokens * 100 / session.ContextWindow
+	return fmt.Sprintf("%d%%", pct)
+}
+
+// wrapPreview wraps text to width, capped at maxLines, with "  " prefix.
+func wrapPreview(s string, width, maxLines int) string {
+	s = strings.Join(strings.Fields(s), " ")
+	if width < 10 {
+		width = 10
+	}
+	var out []string
+	for len(s) > 0 && len(out) < maxLines {
+		if len(s) <= width-2 {
+			out = append(out, "  "+s)
+			break
+		}
+		out = append(out, "  "+s[:width-2])
+		s = s[width-2:]
+	}
+	if len(s) > 0 && len(out) == maxLines {
+		out[maxLines-1] = strings.TrimRight(out[maxLines-1], " ") + "…"
+	}
+	return strings.Join(out, "\n") + "\n"
 }
 
 func truncate(s string, w int) string {
