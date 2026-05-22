@@ -127,6 +127,7 @@ func Scan(opts ScanOptions) ([]session.Session, error) {
 				MessageCount:  stats.MessageCount,
 				LastRole:      stats.LastRole,
 				ContextTokens: stats.ContextTokens,
+				Model:         stats.Model,
 				LastAssistant: stats.LastAssistant,
 			})
 		}

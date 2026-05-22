@@ -214,7 +214,7 @@ func (m Model) renderListNarrow() string {
 
 		line2 := fmt.Sprintf("  %s", truncate(s.ProjectName, m.width-2))
 		line3 := fmt.Sprintf("  ctx %s · %d msgs · %s",
-			contextPct(s.ContextTokens), s.MessageCount, humanizeAgo(s.LastModified))
+			contextPct(s.ContextTokens, s.Model), s.MessageCount, humanizeAgo(s.LastModified))
 
 		bar := unselectedBar
 		if i == m.cursor {
@@ -264,7 +264,7 @@ func (m Model) renderListWide() string {
 			icon,
 			projW, truncate(s.ProjectName, projW),
 			titleW, truncate(title, titleW),
-			ctxW, contextPct(s.ContextTokens),
+			ctxW, contextPct(s.ContextTokens, s.Model),
 			msgW, s.MessageCount,
 			agoW, humanizeAgo(s.LastModified))
 
@@ -312,7 +312,7 @@ func (m Model) renderDetail() string {
 	b.WriteString(headerStyle.Render("Stats"))
 	b.WriteString("\n")
 	b.WriteString(fmt.Sprintf("  Context:  %s (%d / %d tokens)\n",
-		contextPct(s.ContextTokens), s.ContextTokens, session.ContextWindow))
+		contextPct(s.ContextTokens, s.Model), s.ContextTokens, session.ContextWindowFor(s.Model)))
 	b.WriteString(fmt.Sprintf("  Messages: %d\n", s.MessageCount))
 	b.WriteString(fmt.Sprintf("  Last:     %s (%s)\n",
 		humanizeAgo(s.LastModified), s.LastModified.Format("2006-01-02 15:04:05")))
@@ -356,11 +356,11 @@ func shortID(id string) string {
 }
 
 // contextPct returns the context usage as "46%" (or "—" if unknown).
-func contextPct(tokens int) string {
+func contextPct(tokens int, model string) string {
 	if tokens <= 0 {
 		return "—"
 	}
-	pct := tokens * 100 / session.ContextWindow
+	pct := tokens * 100 / session.ContextWindowFor(model)
 	return fmt.Sprintf("%d%%", pct)
 }
 

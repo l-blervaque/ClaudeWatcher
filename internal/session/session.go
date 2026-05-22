@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"time"
 )
@@ -59,14 +60,49 @@ type Session struct {
 	MessageCount  int
 	LastRole      string
 	ContextTokens int
+	Model         string // last assistant message model id (e.g. "claude-opus-4-7")
 	LastAssistant string
 	Status        Status
 	HasProcess    bool
 }
 
-// ContextWindow is the assumed model context size for the % calculation.
-// Claude Sonnet/Opus default = 200K tokens.
+// Default context window when the model is unknown.
 const ContextWindow = 200_000
+
+// ContextWindowFor returns the context window size in tokens for a given
+// Claude model id. Opus 4.5+ and Sonnet 4.5+ support 1M tokens; older models
+// and Haiku stay at 200K.
+func ContextWindowFor(model string) int {
+	family, major, minor, ok := parseClaudeVersion(model)
+	if !ok {
+		return ContextWindow
+	}
+	switch family {
+	case "opus", "sonnet":
+		if major > 4 || (major == 4 && minor >= 5) {
+			return 1_000_000
+		}
+	}
+	return ContextWindow
+}
+
+// parseClaudeVersion extracts family + version from ids like
+// "claude-opus-4-7" or "claude-sonnet-4-6-20251001".
+func parseClaudeVersion(id string) (family string, major, minor int, ok bool) {
+	if !strings.HasPrefix(id, "claude-") {
+		return "", 0, 0, false
+	}
+	parts := strings.Split(strings.TrimPrefix(id, "claude-"), "-")
+	if len(parts) < 3 {
+		return "", 0, 0, false
+	}
+	maj, err1 := strconv.Atoi(parts[1])
+	min, err2 := strconv.Atoi(parts[2])
+	if err1 != nil || err2 != nil {
+		return "", 0, 0, false
+	}
+	return parts[0], maj, min, true
+}
 
 // DecodeProjectDir converts "-Users-ludo-foo-bar" into "/Users/ludo/foo/bar".
 // Claude Code encodes the cwd by replacing "/" with "-".
@@ -90,6 +126,7 @@ type jsonlLine struct {
 	AiTitle     string `json:"aiTitle"`
 	Message     struct {
 		Role    string          `json:"role"`
+		Model   string          `json:"model"`
 		Content json.RawMessage `json:"content"`
 		Usage   struct {
 			InputTokens              int `json:"input_tokens"`
@@ -109,6 +146,7 @@ type JSONLStats struct {
 	CustomTitle     string // last /rename value
 	AiTitle         string // last auto-generated title
 	ContextTokens   int    // last known total tokens in context (input + cache_read + cache_creation)
+	Model           string // last assistant message model id
 	LastAssistant   string // text of the last assistant message
 }
 
@@ -159,6 +197,9 @@ func ScanJSONL(path string) (JSONLStats, error) {
 				u := l.Message.Usage
 				if total := u.InputTokens + u.CacheCreationInputTokens + u.CacheReadInputTokens; total > 0 {
 					stats.ContextTokens = total
+				}
+				if l.Message.Model != "" {
+					stats.Model = l.Message.Model
 				}
 				if text := extractAssistantText(l.Message.Content); text != "" {
 					stats.LastAssistant = text
