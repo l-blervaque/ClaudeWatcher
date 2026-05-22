@@ -91,7 +91,58 @@ func Scan(opts ScanOptions) ([]session.Session, error) {
 			continue
 		}
 		for _, f := range files {
-			if f.IsDir() || !strings.HasSuffix(f.Name(), ".jsonl") {
+			if f.IsDir() {
+				// Check for <session-uuid>/subagents/ directory structure.
+				subagentsDir := filepath.Join(fullDir, f.Name(), "subagents")
+				subFiles, err := os.ReadDir(subagentsDir)
+				if err != nil {
+					continue
+				}
+				for _, sf := range subFiles {
+					if sf.IsDir() || !strings.HasSuffix(sf.Name(), ".jsonl") {
+						continue
+					}
+					jsonlPath := filepath.Join(subagentsDir, sf.Name())
+					info, err := sf.Info()
+					if err != nil {
+						continue
+					}
+					stats, _ := session.ScanJSONL(jsonlPath)
+					id := strings.TrimSuffix(sf.Name(), ".jsonl")
+
+					path := projectPath
+					name := projectName
+					if stats.Cwd != "" {
+						path = stats.Cwd
+						name = filepath.Base(stats.Cwd)
+					}
+
+					title, source := resolveTitle(stats)
+					all = append(all, session.Session{
+						ID:               id,
+						ProjectDir:       projectDir,
+						ProjectPath:      path,
+						ProjectName:      name,
+						Title:            title,
+						TitleSource:      source,
+						CustomTitle:      stats.CustomTitle,
+						AiTitle:          stats.AiTitle,
+						FirstPrompt:      cleanTitle(stats.FirstPrompt),
+						JSONLPath:        jsonlPath,
+						LastModified:     info.ModTime(),
+						MessageCount:     stats.MessageCount,
+						LastRole:         stats.LastRole,
+						ContextTokens:    stats.ContextTokens,
+						Model:            stats.Model,
+						LastAssistant:    stats.LastAssistant,
+						IsSubagent:       stats.IsSubagent,
+						CacheEfficiency:  stats.CacheEfficiency,
+						AwaySummaryCount: stats.AwaySummaryCount,
+					})
+				}
+				continue
+			}
+			if !strings.HasSuffix(f.Name(), ".jsonl") {
 				continue
 			}
 			jsonlPath := filepath.Join(fullDir, f.Name())

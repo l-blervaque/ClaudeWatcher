@@ -74,6 +74,7 @@ type sessionsMsg struct {
 type Model struct {
 	sessions     []session.Session
 	cursor       int
+	offset       int // scroll offset for the session list
 	width        int
 	height       int
 	err          error
@@ -160,15 +161,19 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		case "j", "down":
 			if m.cursor < len(m.sessions)-1 {
 				m.cursor++
+				m.offset = clampOffset(m.cursor, m.offset, m.visibleRows())
 			}
 		case "k", "up":
 			if m.cursor > 0 {
 				m.cursor--
+				m.offset = clampOffset(m.cursor, m.offset, m.visibleRows())
 			}
 		case "r":
 			return m, loadSessions(m.includeEnded)
 		case "a":
 			m.includeEnded = !m.includeEnded
+			m.cursor = 0
+			m.offset = 0
 			return m, loadSessions(m.includeEnded)
 		case "o":
 			if !m.detail {
@@ -198,6 +203,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		if m.cursor < 0 {
 			m.cursor = 0
 		}
+		m.offset = clampOffset(m.cursor, m.offset, m.visibleRows())
 	}
 	return m, nil
 }
@@ -327,6 +333,50 @@ func sessionBadges(s session.Session) string {
 	return strings.Join(parts, " ")
 }
 
+// Column widths for the wide layout — single source of truth used by both
+// the header and data rows to prevent alignment drift.
+const (
+	wideColProj  = 20
+	wideColCtx   = 5
+	wideColCache = 7
+	wideColMsg   = 5
+	wideColAgo   = 8
+	wideColBadge = 12
+	// gap chars between columns: icon(1) + spaces between each col = 7 separators
+	wideColGaps = 7
+)
+
+// visibleRows returns how many sessions fit on screen given the current layout.
+// Narrow layout uses 3 lines per session; wide uses 1 line per session.
+// ~5 lines are reserved for header and footer.
+func (m Model) visibleRows() int {
+	reserved := 5
+	available := m.height - reserved
+	if available < 1 {
+		return 1
+	}
+	if m.width < 80 {
+		rows := available / 3
+		if rows < 1 {
+			return 1
+		}
+		return rows
+	}
+	return available
+}
+
+// clampOffset adjusts the scroll offset so that cursor stays within the
+// visible window [offset, offset+visibleRows).
+func clampOffset(cursor, offset, visibleRows int) int {
+	if cursor < offset {
+		return cursor
+	}
+	if cursor >= offset+visibleRows {
+		return cursor - visibleRows + 1
+	}
+	return offset
+}
+
 // renderListNarrow: three lines per session.
 //
 //	● Session title ················· active
@@ -335,7 +385,14 @@ func sessionBadges(s session.Session) string {
 func (m Model) renderListNarrow() string {
 	var b strings.Builder
 
-	for i, s := range m.sessions {
+	visible := m.visibleRows()
+	end := m.offset + visible
+	if end > len(m.sessions) {
+		end = len(m.sessions)
+	}
+
+	for i := m.offset; i < end; i++ {
+		s := m.sessions[i]
 		st := statusStyles[s.Status]
 		icon := st.Render(s.Status.Icon())
 
@@ -389,27 +446,34 @@ func (m Model) renderListNarrow() string {
 }
 
 // renderListWide: one row per session.
-// columns: status(2) project(20) title(flex) ctx(5) cache(7) msgs(5) ago(8) badges
+// columns: status(1) space project(wideColProj) title(flex) ctx(wideColCtx) cache(wideColCache) msgs(wideColMsg) ago(wideColAgo) badges(wideColBadge)
 func (m Model) renderListWide() string {
 	var b strings.Builder
 
-	projW, ctxW, cacheW, msgW, agoW := 20, 5, 7, 5, 8
-	// badges column: "[P]" = 3, "[S]" = 3, "[MULTI]" = 7 — reserve 12 chars
-	badgeW := 12
-	titleW := m.width - 2 - projW - ctxW - cacheW - msgW - agoW - badgeW - 7
+	titleW := m.width - 2 - wideColProj - wideColCtx - wideColCache - wideColMsg - wideColAgo - wideColBadge - wideColGaps
 	if titleW < 10 {
 		titleW = 10
 	}
 
-	header := fmt.Sprintf("  %-*s %-*s %*s %*s %*s %*s %-*s",
-		projW, "PROJECT", titleW, "TITLE",
-		ctxW, "CTX", cacheW, "CACHE",
-		msgW, "MSGS", agoW, "AGE",
-		badgeW, "")
+	// Header uses exact same column widths as data rows.
+	header := fmt.Sprintf("  %-*s %-*s %*s %*s %*s %*s",
+		wideColProj, "PROJECT",
+		titleW, "TITLE",
+		wideColCtx, "CTX",
+		wideColCache, "CACHE",
+		wideColMsg, "MSGS",
+		wideColAgo, "AGE")
 	b.WriteString(headerStyle.Render(header))
 	b.WriteString("\n")
 
-	for i, s := range m.sessions {
+	visible := m.visibleRows()
+	end := m.offset + visible
+	if end > len(m.sessions) {
+		end = len(m.sessions)
+	}
+
+	for i := m.offset; i < end; i++ {
+		s := m.sessions[i]
 		st := statusStyles[s.Status]
 		icon := st.Render(s.Status.Icon())
 		title := s.Title
@@ -431,14 +495,15 @@ func (m Model) renderListWide() string {
 		}
 		badges := strings.Join(badgeParts, " ")
 
+		// Use same column widths as the header.
 		row := fmt.Sprintf("%s %-*s %-*s %*s %s %*d %*s %s",
 			icon,
-			projW, truncate(s.ProjectName, projW),
+			wideColProj, truncate(s.ProjectName, wideColProj),
 			titleW, truncate(title, titleW),
-			ctxW, contextPct(s.ContextTokens, s.Model),
-			padRight(cacheStr, cacheW),
-			msgW, s.MessageCount,
-			agoW, humanizeAgo(s.LastModified),
+			wideColCtx, contextPct(s.ContextTokens, s.Model),
+			padRight(cacheStr, wideColCache),
+			wideColMsg, s.MessageCount,
+			wideColAgo, humanizeAgo(s.LastModified),
 			badges)
 
 		bar := unselectedBar
