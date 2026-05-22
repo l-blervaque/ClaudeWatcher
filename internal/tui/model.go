@@ -9,13 +9,22 @@ import (
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/lipgloss"
 
+	"github.com/ludo/claudewatcher/internal/audio"
+	"github.com/ludo/claudewatcher/internal/config"
 	"github.com/ludo/claudewatcher/internal/scanner"
 	"github.com/ludo/claudewatcher/internal/session"
+	"github.com/ludo/claudewatcher/internal/version"
 )
 
 const refreshInterval = 2 * time.Second
 
 // ---- styles ----
+
+// availableSounds is the ordered list of sound names the user can cycle through.
+// It is the single source of truth for both the options panel and the Update handler.
+var availableSounds = []string{"glass", "ping", "funk"}
+
+var soundLabels = []string{"Glass", "Ping", "Funk"}
 
 var (
 	titleStyle = lipgloss.NewStyle().
@@ -41,6 +50,15 @@ var (
 		session.StatusIdle:    lipgloss.NewStyle().Foreground(lipgloss.Color("#2196F3")),
 		session.StatusEnded:   lipgloss.NewStyle().Foreground(lipgloss.Color("#666")),
 	}
+
+	// Cache efficiency color styles.
+	cacheGoodStyle = lipgloss.NewStyle().Foreground(lipgloss.Color("#4CAF50"))
+	cacheMidStyle  = lipgloss.NewStyle().Foreground(lipgloss.Color("#FFC107"))
+	cacheBadStyle  = lipgloss.NewStyle().Foreground(lipgloss.Color("#F44336"))
+
+	// Badge styles.
+	badgeSubStyle   = lipgloss.NewStyle().Foreground(lipgloss.Color("#888"))
+	badgeMultiStyle = lipgloss.NewStyle().Foreground(lipgloss.Color("#FF9800"))
 )
 
 // ---- messages ----
@@ -60,11 +78,19 @@ type Model struct {
 	height       int
 	err          error
 	detail       bool
-	includeEnded bool // toggle with 'a'
+	includeEnded bool
+	options      bool
+	optCursor    int
+	cfg          config.Config
+	prevStatus   map[string]session.Status
 }
 
 func NewModel() Model {
-	return Model{}
+	cfg, _ := config.Load()
+	return Model{
+		cfg:        cfg,
+		prevStatus: make(map[string]session.Status),
+	}
 }
 
 func (m Model) Init() tea.Cmd {
@@ -90,8 +116,46 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.width = msg.Width
 		m.height = msg.Height
 	case tea.KeyMsg:
+		if m.options {
+			switch msg.String() {
+			case "ctrl+q", "ctrl+c":
+				config.Save(m.cfg) //nolint:errcheck
+				return m, tea.Quit
+			case "j", "down":
+				if m.optCursor < 1 {
+					m.optCursor++
+				}
+			case "k", "up":
+				if m.optCursor > 0 {
+					m.optCursor--
+				}
+			case " ", "enter":
+				switch m.optCursor {
+				case 0:
+					m.cfg.SoundEnabled = !m.cfg.SoundEnabled
+				case 1:
+					if m.cfg.SoundEnabled {
+						found := false
+						for i, s := range availableSounds {
+							if s == m.cfg.SoundName {
+								m.cfg.SoundName = availableSounds[(i+1)%len(availableSounds)]
+								found = true
+								break
+							}
+						}
+						if !found {
+							m.cfg.SoundName = availableSounds[0]
+						}
+					}
+				}
+			case "esc":
+				m.options = false
+				config.Save(m.cfg) //nolint:errcheck
+			}
+			return m, nil
+		}
 		switch msg.String() {
-		case "q", "ctrl+c":
+		case "ctrl+q", "ctrl+c":
 			return m, tea.Quit
 		case "j", "down":
 			if m.cursor < len(m.sessions)-1 {
@@ -106,6 +170,10 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		case "a":
 			m.includeEnded = !m.includeEnded
 			return m, loadSessions(m.includeEnded)
+		case "o":
+			if !m.detail {
+				m.options = true
+			}
 		case "enter":
 			m.detail = !m.detail
 		case "esc":
@@ -115,7 +183,15 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return m, tea.Batch(loadSessions(m.includeEnded), tick())
 	case sessionsMsg:
 		m.err = msg.err
-		m.sessions = sortSessions(msg.sessions)
+		newSessions := sortSessions(msg.sessions)
+		if m.cfg.SoundEnabled && detectTransitions(m.prevStatus, newSessions) {
+			audio.Play(m.cfg.SoundName)
+		}
+		m.prevStatus = make(map[string]session.Status, len(newSessions))
+		for _, s := range newSessions {
+			m.prevStatus[s.ID] = s.Status
+		}
+		m.sessions = newSessions
 		if m.cursor >= len(m.sessions) {
 			m.cursor = len(m.sessions) - 1
 		}
@@ -141,10 +217,13 @@ func sortSessions(s []session.Session) []session.Session {
 
 func (m Model) View() string {
 	if m.err != nil {
-		return fmt.Sprintf("Error: %v\n\nPress q to quit.", m.err)
+		return fmt.Sprintf("Error: %v\n\nPress ctrl+q to quit.", m.err)
 	}
 	if m.width == 0 {
 		return "Loading..."
+	}
+	if m.options {
+		return m.renderOptions()
 	}
 	if m.detail && len(m.sessions) > 0 {
 		return m.renderDetail()
@@ -152,17 +231,73 @@ func (m Model) View() string {
 	return m.renderList()
 }
 
+func (m Model) renderOptions() string {
+	var b strings.Builder
+	b.WriteString(titleStyle.Render("Options"))
+	b.WriteString("\n\n")
+	b.WriteString(headerStyle.Render("Sons"))
+	b.WriteString("\n")
+
+	check := "[ ]"
+	if m.cfg.SoundEnabled {
+		check = "[x]"
+	}
+	bar0, bar1 := unselectedBar, unselectedBar
+	if m.optCursor == 0 {
+		bar0 = cursorBar
+	} else {
+		bar1 = cursorBar
+	}
+
+	b.WriteString(bar0)
+	b.WriteString(fmt.Sprintf(" %s Activé\n", check))
+
+	var sl strings.Builder
+	for i, name := range availableSounds {
+		if name == m.cfg.SoundName {
+			sl.WriteString(fmt.Sprintf("[%s]", soundLabels[i]))
+		} else {
+			sl.WriteString(soundLabels[i])
+		}
+		if i < len(availableSounds)-1 {
+			sl.WriteString("  ")
+		}
+	}
+	line1 := fmt.Sprintf(" Son : %s", sl.String())
+	b.WriteString(bar1)
+	if m.cfg.SoundEnabled {
+		b.WriteString(line1)
+	} else {
+		b.WriteString(dimStyle.Render(line1))
+	}
+	b.WriteString("\n\n")
+	b.WriteString(dimStyle.Render("esc fermer · j/k nav · espace/enter toggle"))
+	return b.String()
+}
+
 func (m Model) renderList() string {
 	var b strings.Builder
 
-	header := titleStyle.Render("ClaudeWatcher")
-	b.WriteString(header)
-	b.WriteString("  ")
+	// Header line: title on the left, version on the right.
+	appTitle := titleStyle.Render("ClaudeWatcher")
+	ver := dimStyle.Render("v" + version.Version)
 	mode := "open"
 	if m.includeEnded {
 		mode = "all"
 	}
-	b.WriteString(dimStyle.Render(fmt.Sprintf("%d sessions · %s", len(m.sessions), mode)))
+	sessionInfo := dimStyle.Render(fmt.Sprintf("%d sessions · %s", len(m.sessions), mode))
+	// Build header with version right-aligned.
+	titlePart := appTitle + "  " + sessionInfo
+	// Rough visible length of titlePart (strip ANSI for width calculation).
+	titlePartVisible := stripANSI(appTitle) + "  " + stripANSI(sessionInfo)
+	verVisible := stripANSI(ver)
+	gap := m.width - len(titlePartVisible) - len(verVisible)
+	if gap < 1 {
+		gap = 1
+	}
+	b.WriteString(titlePart)
+	b.WriteString(strings.Repeat(" ", gap))
+	b.WriteString(ver)
 	b.WriteString("\n\n")
 
 	narrow := m.width < 80
@@ -174,14 +309,29 @@ func (m Model) renderList() string {
 	}
 
 	b.WriteString("\n")
-	b.WriteString(dimStyle.Render("j/k nav · enter detail · a all/open · r refresh · q quit"))
+	b.WriteString(dimStyle.Render("j/k nav · enter detail · o options · a all/open · r refresh · ctrl+q quit"))
 	return b.String()
 }
 
+// sessionBadges returns the inline badges string for a session (e.g. "[S] [MULTI]").
+func sessionBadges(s session.Session) string {
+	var parts []string
+	if s.IsSubagent {
+		parts = append(parts, badgeSubStyle.Render("[S]"))
+	} else {
+		parts = append(parts, badgeSubStyle.Render("[P]"))
+	}
+	if s.AwaySummaryCount >= 1 {
+		parts = append(parts, badgeMultiStyle.Render("[MULTI]"))
+	}
+	return strings.Join(parts, " ")
+}
+
 // renderListNarrow: three lines per session.
-//   ● Session title ················· active
-//     customer-biogen
-//     ctx 46% · 42 msgs · 2m
+//
+//	● Session title ················· active
+//	  customer-biogen
+//	  ctx 46% · 42 msgs · 2m
 func (m Model) renderListNarrow() string {
 	var b strings.Builder
 
@@ -212,7 +362,8 @@ func (m Model) renderListNarrow() string {
 			dimStyle.Render(strings.Repeat("·", fillN)),
 			st.Render(status))
 
-		line2 := fmt.Sprintf("  %s", truncate(s.ProjectName, m.width-2))
+		badges := sessionBadges(s)
+		line2 := fmt.Sprintf("  %s  %s", truncate(s.ProjectName, m.width-2), badges)
 		line3 := fmt.Sprintf("  ctx %s · %d msgs · %s",
 			contextPct(s.ContextTokens, s.Model), s.MessageCount, humanizeAgo(s.LastModified))
 
@@ -238,18 +389,23 @@ func (m Model) renderListNarrow() string {
 }
 
 // renderListWide: one row per session.
+// columns: status(2) project(20) title(flex) ctx(5) cache(7) msgs(5) ago(8) badges
 func (m Model) renderListWide() string {
 	var b strings.Builder
 
-	// columns: status(2) project(20) title(flex) ctx(5) msgs(5) ago(8)
-	projW, ctxW, msgW, agoW := 20, 5, 5, 8
-	titleW := m.width - 2 - projW - ctxW - msgW - agoW - 5
+	projW, ctxW, cacheW, msgW, agoW := 20, 5, 7, 5, 8
+	// badges column: "[P]" = 3, "[S]" = 3, "[MULTI]" = 7 — reserve 12 chars
+	badgeW := 12
+	titleW := m.width - 2 - projW - ctxW - cacheW - msgW - agoW - badgeW - 7
 	if titleW < 10 {
 		titleW = 10
 	}
 
-	header := fmt.Sprintf("  %-*s %-*s %*s %*s %*s",
-		projW, "PROJECT", titleW, "TITLE", ctxW, "CTX", msgW, "MSGS", agoW, "AGE")
+	header := fmt.Sprintf("  %-*s %-*s %*s %*s %*s %*s %-*s",
+		projW, "PROJECT", titleW, "TITLE",
+		ctxW, "CTX", cacheW, "CACHE",
+		msgW, "MSGS", agoW, "AGE",
+		badgeW, "")
 	b.WriteString(headerStyle.Render(header))
 	b.WriteString("\n")
 
@@ -260,13 +416,30 @@ func (m Model) renderListWide() string {
 		if title == "" {
 			title = "—"
 		}
-		row := fmt.Sprintf("%s %-*s %-*s %*s %*d %*s",
+
+		cacheStr := cachePct(s.CacheEfficiency)
+
+		// Build badges inline.
+		var badgeParts []string
+		if s.IsSubagent {
+			badgeParts = append(badgeParts, badgeSubStyle.Render("[S]"))
+		} else {
+			badgeParts = append(badgeParts, badgeSubStyle.Render("[P]"))
+		}
+		if s.AwaySummaryCount >= 1 {
+			badgeParts = append(badgeParts, badgeMultiStyle.Render("[MULTI]"))
+		}
+		badges := strings.Join(badgeParts, " ")
+
+		row := fmt.Sprintf("%s %-*s %-*s %*s %s %*d %*s %s",
 			icon,
 			projW, truncate(s.ProjectName, projW),
 			titleW, truncate(title, titleW),
 			ctxW, contextPct(s.ContextTokens, s.Model),
+			padRight(cacheStr, cacheW),
 			msgW, s.MessageCount,
-			agoW, humanizeAgo(s.LastModified))
+			agoW, humanizeAgo(s.LastModified),
+			badges)
 
 		bar := unselectedBar
 		if i == m.cursor {
@@ -277,6 +450,22 @@ func (m Model) renderListWide() string {
 		b.WriteString("\n")
 	}
 	return b.String()
+}
+
+// cachePct returns the cache efficiency as a colored string, or "--".
+func cachePct(eff float64) string {
+	if eff < 0 {
+		return dimStyle.Render("--")
+	}
+	pct := int(eff * 100)
+	s := fmt.Sprintf("%d%%", pct)
+	if pct >= 85 {
+		return cacheGoodStyle.Render(s)
+	}
+	if pct >= 70 {
+		return cacheMidStyle.Render(s)
+	}
+	return cacheBadStyle.Render(s)
 }
 
 func (m Model) renderDetail() string {
@@ -292,6 +481,16 @@ func (m Model) renderDetail() string {
 	b.WriteString(dimStyle.Render(fmt.Sprintf("          %s\n", s.ProjectPath)))
 	b.WriteString(fmt.Sprintf("Status:   %s %s\n", st.Render(s.Status.Icon()), st.Render(s.Status.Label())))
 	b.WriteString(fmt.Sprintf("Session:  %s\n", s.ID))
+	// Type badge.
+	typeLabel := "Principal [P]"
+	if s.IsSubagent {
+		typeLabel = "Subagent [S]"
+	}
+	b.WriteString(fmt.Sprintf("Type:     %s\n", badgeSubStyle.Render(typeLabel)))
+	if s.AwaySummaryCount >= 1 {
+		b.WriteString(fmt.Sprintf("Multi:    %s (%d away summaries)\n",
+			badgeMultiStyle.Render("[MULTI]"), s.AwaySummaryCount))
+	}
 
 	// Titles — show source breakdown so user sees /rename vs ai-title vs prompt
 	b.WriteString("\n")
@@ -313,6 +512,7 @@ func (m Model) renderDetail() string {
 	b.WriteString("\n")
 	b.WriteString(fmt.Sprintf("  Context:  %s (%d / %d tokens)\n",
 		contextPct(s.ContextTokens, s.Model), s.ContextTokens, session.ContextWindowFor(s.Model)))
+	b.WriteString(fmt.Sprintf("  Cache:    %s\n", cachePct(s.CacheEfficiency)))
 	b.WriteString(fmt.Sprintf("  Messages: %d\n", s.MessageCount))
 	b.WriteString(fmt.Sprintf("  Last:     %s (%s)\n",
 		humanizeAgo(s.LastModified), s.LastModified.Format("2006-01-02 15:04:05")))
@@ -328,7 +528,7 @@ func (m Model) renderDetail() string {
 	b.WriteString("\n")
 	b.WriteString(dimStyle.Render(fmt.Sprintf("jsonl: %s\n", s.JSONLPath)))
 	b.WriteString("\n")
-	b.WriteString(dimStyle.Render("enter/esc back · q quit"))
+	b.WriteString(dimStyle.Render("enter/esc back · ctrl+q quit"))
 	return b.String()
 }
 
@@ -399,10 +599,12 @@ func truncate(s string, w int) string {
 }
 
 func padRight(s string, w int) string {
-	if len(s) >= w {
+	// padRight pads the visible string (after stripping ANSI) to w runes.
+	vis := stripANSI(s)
+	if len(vis) >= w {
 		return s
 	}
-	return s + strings.Repeat(" ", w-len(s))
+	return s + strings.Repeat(" ", w-len(vis))
 }
 
 // stripANSI: very rough ANSI escape stripper for length-based padding when

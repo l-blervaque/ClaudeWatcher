@@ -46,40 +46,47 @@ func (s Status) Label() string {
 }
 
 type Session struct {
-	ID            string
-	ProjectDir    string
-	ProjectPath   string
-	ProjectName   string
-	Title         string // resolved display name
-	TitleSource   string // "custom" | "ai" | "prompt" | ""
-	CustomTitle   string
-	AiTitle       string
-	FirstPrompt   string
-	JSONLPath     string
-	LastModified  time.Time
-	MessageCount  int
-	LastRole      string
-	ContextTokens int
-	Model         string // last assistant message model id (e.g. "claude-opus-4-7")
-	LastAssistant string
-	Status        Status
-	HasProcess    bool
+	ID              string
+	ProjectDir      string
+	ProjectPath     string
+	ProjectName     string
+	Title           string // resolved display name
+	TitleSource     string // "custom" | "ai" | "prompt" | ""
+	CustomTitle     string
+	AiTitle         string
+	FirstPrompt     string
+	JSONLPath       string
+	LastModified    time.Time
+	MessageCount    int
+	LastRole        string
+	ContextTokens   int
+	Model           string // last assistant message model id (e.g. "claude-opus-4-7")
+	LastAssistant   string
+	Status          Status
+	HasProcess      bool
+	IsSubagent      bool    // true if no main-session marker lines found in first 30 lines
+	CacheEfficiency float64 // cache_read / (input + cache_read + cache_creation), -1 if not calculable
+	AwaySummaryCount int   // number of "system" lines with subtype "away_summary"
 }
 
 // Default context window when the model is unknown.
 const ContextWindow = 200_000
 
 // ContextWindowFor returns the context window size in tokens for a given
-// Claude model id. Opus 4.5+ and Sonnet 4.5+ support 1M tokens; older models
-// and Haiku stay at 200K.
+// Claude model id. Opus 4.5+ and Sonnet 4.7+ support 1M tokens; Sonnet 4.6
+// and older models stay at 200K.
 func ContextWindowFor(model string) int {
 	family, major, minor, ok := parseClaudeVersion(model)
 	if !ok {
 		return ContextWindow
 	}
 	switch family {
-	case "opus", "sonnet":
+	case "opus":
 		if major > 4 || (major == 4 && minor >= 5) {
+			return 1_000_000
+		}
+	case "sonnet":
+		if major > 4 || (major == 4 && minor >= 7) {
 			return 1_000_000
 		}
 	}
@@ -120,11 +127,12 @@ func ProjectNameFromDir(name string) string {
 
 // jsonlLine is a minimal struct to extract everything we care about.
 type jsonlLine struct {
-	Type        string `json:"type"`
-	Cwd         string `json:"cwd"`
+	Type    string `json:"type"`
+	Subtype string `json:"subtype"`
+	Cwd     string `json:"cwd"`
 	CustomTitle string `json:"customTitle"`
 	AiTitle     string `json:"aiTitle"`
-	Message     struct {
+	Message struct {
 		Role    string          `json:"role"`
 		Model   string          `json:"model"`
 		Content json.RawMessage `json:"content"`
@@ -139,15 +147,28 @@ type jsonlLine struct {
 
 // JSONLStats holds the extracted metadata from a session jsonl file.
 type JSONLStats struct {
-	MessageCount    int
-	LastRole        string
-	Cwd             string // real working directory
-	FirstPrompt     string // first user message with string content
-	CustomTitle     string // last /rename value
-	AiTitle         string // last auto-generated title
-	ContextTokens   int    // last known total tokens in context (input + cache_read + cache_creation)
-	Model           string // last assistant message model id
-	LastAssistant   string // text of the last assistant message
+	MessageCount     int
+	LastRole         string
+	Cwd              string  // real working directory
+	FirstPrompt      string  // first user message with string content
+	CustomTitle      string  // last /rename value
+	AiTitle          string  // last auto-generated title
+	ContextTokens    int     // last known total tokens in context (input + cache_read + cache_creation)
+	Model            string  // last assistant message model id
+	LastAssistant    string  // text of the last assistant message
+	IsSubagent       bool    // true if no main-session marker lines found in first 30 lines
+	CacheEfficiency  float64 // cache_read / (input + cache_read + cache_creation), -1 if not calculable
+	AwaySummaryCount int     // number of "system" lines with subtype "away_summary"
+}
+
+// mainSessionTypes is the set of line types that only appear in main (non-subagent) sessions.
+var mainSessionTypes = map[string]bool{
+	"system":          true,
+	"custom-title":    true,
+	"ai-title":        true,
+	"permission-mode": true,
+	"queue-operation": true,
+	"agent-name":      true,
 }
 
 // ScanJSONL reads a session jsonl file and extracts stats.
@@ -158,15 +179,32 @@ func ScanJSONL(path string) (JSONLStats, error) {
 	}
 	defer f.Close()
 
-	scanner := bufio.NewScanner(f)
-	scanner.Buffer(make([]byte, 0, 64*1024), 10*1024*1024)
+	sc := bufio.NewScanner(f)
+	sc.Buffer(make([]byte, 0, 64*1024), 10*1024*1024)
 
 	var stats JSONLStats
-	for scanner.Scan() {
+	stats.CacheEfficiency = -1 // sentinel: not calculable
+
+	lineNum := 0
+	foundMainMarker := false
+
+	// Cache accumulation across all non-synthetic assistant messages.
+	var cacheRead, cacheInput, cacheCreation int
+	var assistantMsgCount int
+
+	for sc.Scan() {
 		var l jsonlLine
-		if err := json.Unmarshal(scanner.Bytes(), &l); err != nil {
+		if err := json.Unmarshal(sc.Bytes(), &l); err != nil {
 			continue
 		}
+
+		lineNum++
+
+		// Subagent detection: check the first 30 lines for main-session markers.
+		if lineNum <= 30 && mainSessionTypes[l.Type] {
+			foundMainMarker = true
+		}
+
 		if l.Cwd != "" && stats.Cwd == "" {
 			stats.Cwd = l.Cwd
 		}
@@ -177,6 +215,12 @@ func ScanJSONL(path string) (JSONLStats, error) {
 		if l.Type == "ai-title" && l.AiTitle != "" {
 			stats.AiTitle = l.AiTitle
 		}
+
+		// Away summary counter (point 6).
+		if l.Type == "system" && l.Subtype == "away_summary" {
+			stats.AwaySummaryCount++
+		}
+
 		if l.Type == "user" || l.Type == "assistant" {
 			stats.MessageCount++
 			if l.Message.Role != "" {
@@ -204,10 +248,29 @@ func ScanJSONL(path string) (JSONLStats, error) {
 				if text := extractAssistantText(l.Message.Content); text != "" {
 					stats.LastAssistant = text
 				}
+				// Cache efficiency accumulation — skip synthetic messages.
+				if l.Message.Model != "<synthetic>" {
+					assistantMsgCount++
+					cacheRead += u.CacheReadInputTokens
+					cacheInput += u.InputTokens
+					cacheCreation += u.CacheCreationInputTokens
+				}
 			}
 		}
 	}
-	return stats, scanner.Err()
+
+	// Subagent: no main-session marker in first 30 lines.
+	stats.IsSubagent = !foundMainMarker
+
+	// Cache efficiency: only compute when >5 assistant messages and denominator > 0.
+	if assistantMsgCount > 5 {
+		denom := cacheRead + cacheInput + cacheCreation
+		if denom > 0 {
+			stats.CacheEfficiency = float64(cacheRead) / float64(denom)
+		}
+	}
+
+	return stats, sc.Err()
 }
 
 // extractAssistantText pulls the first text block from an assistant

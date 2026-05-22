@@ -32,6 +32,27 @@ func TestProjectNameFromDir(t *testing.T) {
 	}
 }
 
+func TestContextWindowFor(t *testing.T) {
+	cases := []struct {
+		model string
+		want  int
+	}{
+		{"claude-opus-4-5", 1_000_000},
+		{"claude-opus-4-7", 1_000_000},
+		{"claude-sonnet-4-5", 200_000},  // Sonnet 4.5 stays at 200K
+		{"claude-sonnet-4-6", 200_000},  // Sonnet 4.6 stays at 200K (bug fix)
+		{"claude-sonnet-4-7", 1_000_000},
+		{"claude-haiku-4-5", 200_000},
+		{"unknown-model", 200_000},
+	}
+	for _, c := range cases {
+		got := ContextWindowFor(c.model)
+		if got != c.want {
+			t.Errorf("ContextWindowFor(%q) = %d, want %d", c.model, got, c.want)
+		}
+	}
+}
+
 func TestDetermineStatus(t *testing.T) {
 	now := time.Now()
 	cases := []struct {
