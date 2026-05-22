@@ -469,21 +469,28 @@ func (m Model) renderList() string {
 }
 
 // sessionBadges returns the inline badges string for a session (e.g. "[S] [MULTI]").
-func sessionBadges(s session.Session) string {
+// When dim is true (idle or ended sessions), all badges are rendered in dimStyle.
+func sessionBadges(s session.Session, dim bool) string {
+	badge := func(style lipgloss.Style, text string) string {
+		if dim {
+			return dimStyle.Render(text)
+		}
+		return style.Render(text)
+	}
 	var parts []string
 	if s.IsSubagent {
-		parts = append(parts, badgeSubStyle.Render("[S]"))
+		parts = append(parts, badge(badgeSubStyle, "[S]"))
 	} else {
-		parts = append(parts, badgeSubStyle.Render("[P]"))
+		parts = append(parts, badge(badgeSubStyle, "[P]"))
 	}
 	if s.AwaySummaryCount >= 1 {
-		parts = append(parts, badgeMultiStyle.Render("[MULTI]"))
+		parts = append(parts, badge(badgeMultiStyle, "[MULTI]"))
 	}
 	if s.ApiErrorRate > 0.05 {
-		parts = append(parts, badgeErrStyle.Render("[ERR]"))
+		parts = append(parts, badge(badgeErrStyle, "[ERR]"))
 	}
 	if s.QueueDepth > 0 {
-		parts = append(parts, badgeQueueStyle.Render(fmt.Sprintf("[Q:%d]", s.QueueDepth)))
+		parts = append(parts, badge(badgeQueueStyle, fmt.Sprintf("[Q:%d]", s.QueueDepth)))
 	}
 	return strings.Join(parts, " ")
 }
@@ -550,6 +557,8 @@ func (m Model) renderListNarrow() string {
 		s := m.sessions[i]
 		st := statusStyles[s.Status]
 		icon := st.Render(s.Status.Icon())
+		// Idle and ended sessions use dimStyle for badges and column values.
+		dim := s.Status == session.StatusIdle || s.Status == session.StatusEnded
 
 		title := s.Title
 		if title == "" {
@@ -574,7 +583,7 @@ func (m Model) renderListNarrow() string {
 			dimStyle.Render(strings.Repeat("·", fillN)),
 			st.Render(status))
 
-		badges := sessionBadges(s)
+		badges := sessionBadges(s, dim)
 		line2 := fmt.Sprintf("  %s  %s", truncate(s.ProjectName, m.width-2), badges)
 		line3 := fmt.Sprintf("  ctx %s · %d msgs · %s",
 			contextPct(s.ContextTokens, s.Model), s.MessageCount, humanizeAgo(s.LastModified))
@@ -590,10 +599,11 @@ func (m Model) renderListNarrow() string {
 		b.WriteString(line2)
 		b.WriteString("\n")
 		b.WriteString(bar)
-		if i == m.cursor {
-			b.WriteString(line3)
-		} else {
+		// Non-selected rows: always dim. Selected rows: dim only for idle/ended.
+		if i != m.cursor || dim {
 			b.WriteString(dimStyle.Render(line3))
+		} else {
+			b.WriteString(line3)
 		}
 		b.WriteString("\n")
 	}
@@ -666,6 +676,14 @@ func (m Model) renderListWide() string {
 		if title == "" {
 			title = "—"
 		}
+		// Idle and ended sessions use dimStyle for all column values and badges.
+		dim := s.Status == session.StatusIdle || s.Status == session.StatusEnded
+		colVal := func(raw string) string {
+			if dim {
+				return dimStyle.Render(raw)
+			}
+			return raw
+		}
 
 		var row strings.Builder
 		row.WriteString(fmt.Sprintf("%s %-*s %-*s",
@@ -674,37 +692,21 @@ func (m Model) renderListWide() string {
 			titleW, truncate(title, titleW)))
 
 		if m.cfg.ShowCtx {
-			row.WriteString(fmt.Sprintf(" %*s", wideColCtx, contextPct(s.ContextTokens, s.Model)))
+			row.WriteString(fmt.Sprintf(" %*s", wideColCtx, colVal(contextPct(s.ContextTokens, s.Model))))
 		}
 		if m.cfg.ShowCache {
-			cacheStr := cachePct(s.CacheEfficiency)
+			cacheStr := cachePct(s.CacheEfficiency, dim)
 			row.WriteString(" ")
 			row.WriteString(padRight(cacheStr, wideColCache))
 		}
 		if m.cfg.ShowMsgs {
-			row.WriteString(fmt.Sprintf(" %*d", wideColMsg, s.MessageCount))
+			row.WriteString(fmt.Sprintf(" %*s", wideColMsg, colVal(fmt.Sprintf("%d", s.MessageCount))))
 		}
 		if m.cfg.ShowAge {
-			row.WriteString(fmt.Sprintf(" %*s", wideColAgo, humanizeAgo(s.LastModified)))
+			row.WriteString(fmt.Sprintf(" %*s", wideColAgo, colVal(humanizeAgo(s.LastModified))))
 		}
 		if m.cfg.ShowBadges {
-			// Build badges inline.
-			var badgeParts []string
-			if s.IsSubagent {
-				badgeParts = append(badgeParts, badgeSubStyle.Render("[S]"))
-			} else {
-				badgeParts = append(badgeParts, badgeSubStyle.Render("[P]"))
-			}
-			if s.AwaySummaryCount >= 1 {
-				badgeParts = append(badgeParts, badgeMultiStyle.Render("[MULTI]"))
-			}
-			if s.ApiErrorRate > 0.05 {
-				badgeParts = append(badgeParts, badgeErrStyle.Render("[ERR]"))
-			}
-			if s.QueueDepth > 0 {
-				badgeParts = append(badgeParts, badgeQueueStyle.Render(fmt.Sprintf("[Q:%d]", s.QueueDepth)))
-			}
-			badges := strings.Join(badgeParts, " ")
+			badges := sessionBadges(s, dim)
 			row.WriteString("  ")
 			row.WriteString(badges)
 		}
@@ -721,12 +723,16 @@ func (m Model) renderListWide() string {
 }
 
 // cachePct returns the cache efficiency as a colored string, or "--".
-func cachePct(eff float64) string {
+// When dim is true (idle or ended sessions), the value is rendered in dimStyle.
+func cachePct(eff float64, dim bool) string {
 	if eff < 0 {
 		return dimStyle.Render("--")
 	}
 	pct := int(eff * 100)
 	s := fmt.Sprintf("%d%%", pct)
+	if dim {
+		return dimStyle.Render(s)
+	}
 	if pct >= 85 {
 		return cacheGoodStyle.Render(s)
 	}
@@ -780,7 +786,7 @@ func (m Model) renderDetail() string {
 	b.WriteString("\n")
 	b.WriteString(fmt.Sprintf("  Context:  %s (%d / %d tokens)\n",
 		contextPct(s.ContextTokens, s.Model), s.ContextTokens, session.ContextWindowFor(s.Model)))
-	b.WriteString(fmt.Sprintf("  Cache:    %s\n", cachePct(s.CacheEfficiency)))
+	b.WriteString(fmt.Sprintf("  Cache:    %s\n", cachePct(s.CacheEfficiency, false)))
 	b.WriteString(fmt.Sprintf("  Messages: %d\n", s.MessageCount))
 	b.WriteString(fmt.Sprintf("  Last:     %s (%s)\n",
 		humanizeAgo(s.LastModified), s.LastModified.Format("2006-01-02 15:04:05")))
