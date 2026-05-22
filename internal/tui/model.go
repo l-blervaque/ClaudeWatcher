@@ -18,6 +18,13 @@ import (
 
 const refreshInterval = 2 * time.Second
 
+// Tab indices.
+const (
+	tabSessions  = 0
+	tabOptions   = 1
+	tabShortcuts = 2
+)
+
 // ---- styles ----
 
 // availableSounds is the ordered list of sound names the user can cycle through.
@@ -59,6 +66,19 @@ var (
 	// Badge styles.
 	badgeSubStyle   = lipgloss.NewStyle().Foreground(lipgloss.Color("#888"))
 	badgeMultiStyle = lipgloss.NewStyle().Foreground(lipgloss.Color("#FF9800"))
+	badgeErrStyle   = lipgloss.NewStyle().Foreground(lipgloss.Color("#F44336"))
+	badgeQueueStyle = lipgloss.NewStyle().Foreground(lipgloss.Color("#2196F3"))
+
+	// Footer box style.
+	footerBoxStyle = lipgloss.NewStyle().
+			Border(lipgloss.RoundedBorder()).
+			BorderForeground(lipgloss.Color("#444")).
+			Padding(0, 1)
+
+	// Options section header style.
+	sectionHeaderStyle = lipgloss.NewStyle().
+				Bold(true).
+				Foreground(lipgloss.Color("#888"))
 )
 
 // ---- messages ----
@@ -80,7 +100,7 @@ type Model struct {
 	err          error
 	detail       bool
 	includeEnded bool
-	options      bool
+	activeTab    int // 0=Sessions 1=Options 2=Raccourcis
 	optCursor    int
 	cfg          config.Config
 	prevStatus   map[string]session.Status
@@ -111,19 +131,25 @@ func tick() tea.Cmd {
 	})
 }
 
+// optionsMaxCursor is the highest valid optCursor index in the Options tab.
+// Sons: 0=toggle, 1=sound selector → 2 items
+// Colonnes: 2=ShowCache, 3=ShowCtx, 4=ShowMsgs, 5=ShowAge, 6=ShowBadges → 5 items
+// Total indices: 0..6 → 6
+const optionsMaxCursor = 6
+
 func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	switch msg := msg.(type) {
 	case tea.WindowSizeMsg:
 		m.width = msg.Width
 		m.height = msg.Height
 	case tea.KeyMsg:
-		if m.options {
+		if m.activeTab == tabOptions {
 			switch msg.String() {
 			case "ctrl+q", "ctrl+c":
 				config.Save(m.cfg) //nolint:errcheck
 				return m, tea.Quit
 			case "j", "down":
-				if m.optCursor < 1 {
+				if m.optCursor < optionsMaxCursor {
 					m.optCursor++
 				}
 			case "k", "up":
@@ -148,9 +174,25 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 							m.cfg.SoundName = availableSounds[0]
 						}
 					}
+				case 2:
+					m.cfg.ShowCache = !m.cfg.ShowCache
+				case 3:
+					m.cfg.ShowCtx = !m.cfg.ShowCtx
+				case 4:
+					m.cfg.ShowMsgs = !m.cfg.ShowMsgs
+				case 5:
+					m.cfg.ShowAge = !m.cfg.ShowAge
+				case 6:
+					m.cfg.ShowBadges = !m.cfg.ShowBadges
 				}
+			case "tab":
+				m.activeTab = (m.activeTab + 1) % 3
+				config.Save(m.cfg) //nolint:errcheck
+			case "shift+tab":
+				m.activeTab = (m.activeTab + 2) % 3
+				config.Save(m.cfg) //nolint:errcheck
 			case "esc":
-				m.options = false
+				m.activeTab = tabSessions
 				config.Save(m.cfg) //nolint:errcheck
 			}
 			return m, nil
@@ -158,6 +200,10 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		switch msg.String() {
 		case "ctrl+q", "ctrl+c":
 			return m, tea.Quit
+		case "tab":
+			m.activeTab = (m.activeTab + 1) % 3
+		case "shift+tab":
+			m.activeTab = (m.activeTab + 2) % 3
 		case "j", "down":
 			if m.cursor < len(m.sessions)-1 {
 				m.cursor++
@@ -177,7 +223,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			return m, loadSessions(m.includeEnded)
 		case "o":
 			if !m.detail {
-				m.options = true
+				m.activeTab = tabOptions
 			}
 		case "enter":
 			m.detail = !m.detail
@@ -228,34 +274,76 @@ func (m Model) View() string {
 	if m.width == 0 {
 		return "Loading..."
 	}
-	if m.options {
-		return m.renderOptions()
-	}
 	if m.detail && len(m.sessions) > 0 {
 		return m.renderDetail()
 	}
-	return m.renderList()
+	switch m.activeTab {
+	case tabOptions:
+		return m.renderOptions()
+	case tabShortcuts:
+		return m.renderShortcuts()
+	default:
+		return m.renderList()
+	}
+}
+
+// renderTabBar returns the tab navigation bar string.
+func (m Model) renderTabBar() string {
+	tabs := []string{"Sessions", "Options", "Raccourcis"}
+	var parts []string
+	for i, t := range tabs {
+		if i == m.activeTab {
+			parts = append(parts, lipgloss.NewStyle().
+				Bold(true).Foreground(lipgloss.Color("#7D56F4")).
+				Underline(true).Render(t))
+		} else {
+			parts = append(parts, dimStyle.Render(t))
+		}
+	}
+	return strings.Join(parts, dimStyle.Render("  │  "))
+}
+
+// renderFooter returns a box-bordered footer with contextual shortcuts.
+func (m Model) renderFooter() string {
+	var content string
+	switch {
+	case m.detail:
+		content = "enter/esc retour · ctrl+q quitter"
+	case m.activeTab == tabOptions:
+		content = "j/k nav · espace/enter toggle · tab/esc Sessions"
+	case m.activeTab == tabShortcuts:
+		content = "tab Options · shift+tab Sessions · ctrl+q quitter"
+	default: // tabSessions
+		content = "j/k nav · enter détail · o options · a all/open · r refresh · ctrl+q quitter"
+	}
+	w := m.width - 2
+	if w < 10 {
+		w = 10
+	}
+	return footerBoxStyle.Width(w).Render(dimStyle.Render(content))
 }
 
 func (m Model) renderOptions() string {
 	var b strings.Builder
-	b.WriteString(titleStyle.Render("Options"))
+	b.WriteString(m.renderTabBar())
 	b.WriteString("\n\n")
-	b.WriteString(headerStyle.Render("Sons"))
+
+	// --- Sons section ---
+	b.WriteString(sectionHeaderStyle.Render("Sons"))
 	b.WriteString("\n")
 
 	check := "[ ]"
 	if m.cfg.SoundEnabled {
 		check = "[x]"
 	}
-	bar0, bar1 := unselectedBar, unselectedBar
-	if m.optCursor == 0 {
-		bar0 = cursorBar
-	} else {
-		bar1 = cursorBar
-	}
 
-	b.WriteString(bar0)
+	bars := make([]string, optionsMaxCursor+1)
+	for i := range bars {
+		bars[i] = unselectedBar
+	}
+	bars[m.optCursor] = cursorBar
+
+	b.WriteString(bars[0])
 	b.WriteString(fmt.Sprintf(" %s Activé\n", check))
 
 	var sl strings.Builder
@@ -270,19 +358,80 @@ func (m Model) renderOptions() string {
 		}
 	}
 	line1 := fmt.Sprintf(" Son : %s", sl.String())
-	b.WriteString(bar1)
+	b.WriteString(bars[1])
 	if m.cfg.SoundEnabled {
 		b.WriteString(line1)
 	} else {
 		b.WriteString(dimStyle.Render(line1))
 	}
 	b.WriteString("\n\n")
-	b.WriteString(dimStyle.Render("esc fermer · j/k nav · espace/enter toggle"))
+
+	// --- Colonnes section ---
+	b.WriteString(sectionHeaderStyle.Render("Colonnes"))
+	b.WriteString("\n")
+
+	colOptions := []struct {
+		label   string
+		enabled bool
+		idx     int
+	}{
+		{"Cache", m.cfg.ShowCache, 2},
+		{"Ctx", m.cfg.ShowCtx, 3},
+		{"Msgs", m.cfg.ShowMsgs, 4},
+		{"Âge", m.cfg.ShowAge, 5},
+		{"Badges", m.cfg.ShowBadges, 6},
+	}
+	for _, col := range colOptions {
+		chk := "[ ]"
+		if col.enabled {
+			chk = "[x]"
+		}
+		b.WriteString(bars[col.idx])
+		b.WriteString(fmt.Sprintf(" %s %s\n", chk, col.label))
+	}
+
+	b.WriteString("\n")
+	b.WriteString(m.renderFooter())
+	return b.String()
+}
+
+// renderShortcuts shows all keyboard shortcuts.
+func (m Model) renderShortcuts() string {
+	var b strings.Builder
+	b.WriteString(m.renderTabBar())
+	b.WriteString("\n\n")
+	b.WriteString(headerStyle.Render("Raccourcis clavier"))
+	b.WriteString("\n\n")
+
+	shortcuts := [][2]string{
+		{"j / k", "naviguer haut/bas"},
+		{"enter", "ouvrir le détail"},
+		{"esc", "fermer le détail"},
+		{"a", "afficher tout / sessions ouvertes"},
+		{"r", "rafraîchir maintenant"},
+		{"o", "ouvrir les Options"},
+		{"tab", "onglet suivant"},
+		{"shift+tab", "onglet précédent"},
+		{"ctrl+q", "quitter"},
+	}
+	for _, s := range shortcuts {
+		key := fmt.Sprintf("%-12s", s[0])
+		b.WriteString(fmt.Sprintf("  %s  %s\n",
+			lipgloss.NewStyle().Bold(true).Render(key),
+			dimStyle.Render(s[1])))
+	}
+
+	b.WriteString("\n")
+	b.WriteString(m.renderFooter())
 	return b.String()
 }
 
 func (m Model) renderList() string {
 	var b strings.Builder
+
+	// Tab bar.
+	b.WriteString(m.renderTabBar())
+	b.WriteString("\n")
 
 	// Header line: title on the left, version on the right.
 	appTitle := titleStyle.Render("ClaudeWatcher")
@@ -315,7 +464,7 @@ func (m Model) renderList() string {
 	}
 
 	b.WriteString("\n")
-	b.WriteString(dimStyle.Render("j/k nav · enter detail · o options · a all/open · r refresh · ctrl+q quit"))
+	b.WriteString(m.renderFooter())
 	return b.String()
 }
 
@@ -329,6 +478,12 @@ func sessionBadges(s session.Session) string {
 	}
 	if s.AwaySummaryCount >= 1 {
 		parts = append(parts, badgeMultiStyle.Render("[MULTI]"))
+	}
+	if s.ApiErrorRate > 0.05 {
+		parts = append(parts, badgeErrStyle.Render("[ERR]"))
+	}
+	if s.QueueDepth > 0 {
+		parts = append(parts, badgeQueueStyle.Render(fmt.Sprintf("[Q:%d]", s.QueueDepth)))
 	}
 	return strings.Join(parts, " ")
 }
@@ -348,9 +503,9 @@ const (
 
 // visibleRows returns how many sessions fit on screen given the current layout.
 // Narrow layout uses 3 lines per session; wide uses 1 line per session.
-// ~5 lines are reserved for header and footer.
+// ~8 lines are reserved for tab bar, header, and footer box.
 func (m Model) visibleRows() int {
-	reserved := 5
+	reserved := 8
 	available := m.height - reserved
 	if available < 1 {
 		return 1
@@ -446,24 +601,55 @@ func (m Model) renderListNarrow() string {
 }
 
 // renderListWide: one row per session.
-// columns: status(1) space project(wideColProj) title(flex) ctx(wideColCtx) cache(wideColCache) msgs(wideColMsg) ago(wideColAgo) badges(wideColBadge)
+// columns: status(1) space project(wideColProj) title(flex) [ctx] [cache] [msgs] [ago] [badges]
 func (m Model) renderListWide() string {
 	var b strings.Builder
 
-	titleW := m.width - 2 - wideColProj - wideColCtx - wideColCache - wideColMsg - wideColAgo - wideColBadge - wideColGaps
+	// Compute titleW by subtracting only the visible optional columns.
+	optColsW := 0
+	if m.cfg.ShowCtx {
+		optColsW += wideColCtx + 1
+	}
+	if m.cfg.ShowCache {
+		optColsW += wideColCache + 1
+	}
+	if m.cfg.ShowMsgs {
+		optColsW += wideColMsg + 1
+	}
+	if m.cfg.ShowAge {
+		optColsW += wideColAgo + 1
+	}
+	if m.cfg.ShowBadges {
+		optColsW += wideColBadge + 2
+	}
+
+	// Fixed: 2 (cursor+icon) + project + 1 (space)
+	titleW := m.width - 2 - wideColProj - optColsW
 	if titleW < 10 {
 		titleW = 10
 	}
 
-	// Header uses exact same column widths as data rows.
-	header := fmt.Sprintf("  %-*s %-*s %*s %*s %*s %*s",
+	// Build header.
+	var hdr strings.Builder
+	hdr.WriteString(fmt.Sprintf("  %-*s %-*s",
 		wideColProj, "PROJECT",
-		titleW, "TITLE",
-		wideColCtx, "CTX",
-		wideColCache, "CACHE",
-		wideColMsg, "MSGS",
-		wideColAgo, "AGE")
-	b.WriteString(headerStyle.Render(header))
+		titleW, "TITLE"))
+	if m.cfg.ShowCtx {
+		hdr.WriteString(fmt.Sprintf(" %*s", wideColCtx, "CTX"))
+	}
+	if m.cfg.ShowCache {
+		hdr.WriteString(fmt.Sprintf(" %*s", wideColCache, "CACHE"))
+	}
+	if m.cfg.ShowMsgs {
+		hdr.WriteString(fmt.Sprintf(" %*s", wideColMsg, "MSGS"))
+	}
+	if m.cfg.ShowAge {
+		hdr.WriteString(fmt.Sprintf(" %*s", wideColAgo, "AGE"))
+	}
+	if m.cfg.ShowBadges {
+		hdr.WriteString(fmt.Sprintf("  %-*s", wideColBadge, "FLAGS"))
+	}
+	b.WriteString(headerStyle.Render(hdr.String()))
 	b.WriteString("\n")
 
 	visible := m.visibleRows()
@@ -481,37 +667,54 @@ func (m Model) renderListWide() string {
 			title = "—"
 		}
 
-		cacheStr := cachePct(s.CacheEfficiency)
-
-		// Build badges inline.
-		var badgeParts []string
-		if s.IsSubagent {
-			badgeParts = append(badgeParts, badgeSubStyle.Render("[S]"))
-		} else {
-			badgeParts = append(badgeParts, badgeSubStyle.Render("[P]"))
-		}
-		if s.AwaySummaryCount >= 1 {
-			badgeParts = append(badgeParts, badgeMultiStyle.Render("[MULTI]"))
-		}
-		badges := strings.Join(badgeParts, " ")
-
-		// Use same column widths as the header.
-		row := fmt.Sprintf("%s %-*s %-*s %*s %s %*d %*s %s",
+		var row strings.Builder
+		row.WriteString(fmt.Sprintf("%s %-*s %-*s",
 			icon,
 			wideColProj, truncate(s.ProjectName, wideColProj),
-			titleW, truncate(title, titleW),
-			wideColCtx, contextPct(s.ContextTokens, s.Model),
-			padRight(cacheStr, wideColCache),
-			wideColMsg, s.MessageCount,
-			wideColAgo, humanizeAgo(s.LastModified),
-			badges)
+			titleW, truncate(title, titleW)))
+
+		if m.cfg.ShowCtx {
+			row.WriteString(fmt.Sprintf(" %*s", wideColCtx, contextPct(s.ContextTokens, s.Model)))
+		}
+		if m.cfg.ShowCache {
+			cacheStr := cachePct(s.CacheEfficiency)
+			row.WriteString(" ")
+			row.WriteString(padRight(cacheStr, wideColCache))
+		}
+		if m.cfg.ShowMsgs {
+			row.WriteString(fmt.Sprintf(" %*d", wideColMsg, s.MessageCount))
+		}
+		if m.cfg.ShowAge {
+			row.WriteString(fmt.Sprintf(" %*s", wideColAgo, humanizeAgo(s.LastModified)))
+		}
+		if m.cfg.ShowBadges {
+			// Build badges inline.
+			var badgeParts []string
+			if s.IsSubagent {
+				badgeParts = append(badgeParts, badgeSubStyle.Render("[S]"))
+			} else {
+				badgeParts = append(badgeParts, badgeSubStyle.Render("[P]"))
+			}
+			if s.AwaySummaryCount >= 1 {
+				badgeParts = append(badgeParts, badgeMultiStyle.Render("[MULTI]"))
+			}
+			if s.ApiErrorRate > 0.05 {
+				badgeParts = append(badgeParts, badgeErrStyle.Render("[ERR]"))
+			}
+			if s.QueueDepth > 0 {
+				badgeParts = append(badgeParts, badgeQueueStyle.Render(fmt.Sprintf("[Q:%d]", s.QueueDepth)))
+			}
+			badges := strings.Join(badgeParts, " ")
+			row.WriteString("  ")
+			row.WriteString(badges)
+		}
 
 		bar := unselectedBar
 		if i == m.cursor {
 			bar = cursorBar
 		}
 		b.WriteString(bar)
-		b.WriteString(row)
+		b.WriteString(row.String())
 		b.WriteString("\n")
 	}
 	return b.String()
@@ -581,6 +784,13 @@ func (m Model) renderDetail() string {
 	b.WriteString(fmt.Sprintf("  Messages: %d\n", s.MessageCount))
 	b.WriteString(fmt.Sprintf("  Last:     %s (%s)\n",
 		humanizeAgo(s.LastModified), s.LastModified.Format("2006-01-02 15:04:05")))
+	if s.ApiErrorCount > 0 {
+		b.WriteString(fmt.Sprintf("  API Err:  %d erreurs (%.0f%% des turns)\n",
+			s.ApiErrorCount, s.ApiErrorRate*100))
+	}
+	if s.QueueDepth > 0 {
+		b.WriteString(fmt.Sprintf("  Queue:    %d tâches en attente\n", s.QueueDepth))
+	}
 
 	// Last assistant message preview
 	if s.LastAssistant != "" {
@@ -593,7 +803,7 @@ func (m Model) renderDetail() string {
 	b.WriteString("\n")
 	b.WriteString(dimStyle.Render(fmt.Sprintf("jsonl: %s\n", s.JSONLPath)))
 	b.WriteString("\n")
-	b.WriteString(dimStyle.Render("enter/esc back · ctrl+q quit"))
+	b.WriteString(m.renderFooter())
 	return b.String()
 }
 

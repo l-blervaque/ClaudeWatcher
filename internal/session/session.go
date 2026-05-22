@@ -67,6 +67,10 @@ type Session struct {
 	IsSubagent      bool    // true if no main-session marker lines found in first 30 lines
 	CacheEfficiency float64 // cache_read / (input + cache_read + cache_creation), -1 if not calculable
 	AwaySummaryCount int   // number of "system" lines with subtype "away_summary"
+	ApiErrorCount   int
+	TurnCount       int
+	ApiErrorRate    float64 // ApiErrorCount / TurnCount, 0 if TurnCount == 0
+	QueueDepth      int    // enqueue - dequeue (min 0), from queue-operation lines
 }
 
 // Default context window when the model is unknown.
@@ -132,6 +136,7 @@ type jsonlLine struct {
 	Cwd     string `json:"cwd"`
 	CustomTitle string `json:"customTitle"`
 	AiTitle     string `json:"aiTitle"`
+	Action  string `json:"action"` // for queue-operation lines: "enqueue" | "dequeue"
 	Message struct {
 		Role    string          `json:"role"`
 		Model   string          `json:"model"`
@@ -159,6 +164,10 @@ type JSONLStats struct {
 	IsSubagent       bool    // true if no main-session marker lines found in first 30 lines
 	CacheEfficiency  float64 // cache_read / (input + cache_read + cache_creation), -1 if not calculable
 	AwaySummaryCount int     // number of "system" lines with subtype "away_summary"
+	ApiErrorCount    int
+	TurnCount        int
+	ApiErrorRate     float64 // ApiErrorCount / TurnCount, 0 if TurnCount == 0
+	QueueDepth       int    // enqueue - dequeue (min 0)
 }
 
 // mainSessionTypes is the set of line types that only appear in main (non-subagent) sessions.
@@ -221,6 +230,21 @@ func ScanJSONL(path string) (JSONLStats, error) {
 			stats.AwaySummaryCount++
 		}
 
+		// F-006: api_error counter.
+		if l.Type == "system" && l.Subtype == "api_error" {
+			stats.ApiErrorCount++
+		}
+
+		// F-008: queue depth tracking.
+		if l.Type == "queue-operation" {
+			switch l.Action {
+			case "enqueue":
+				stats.QueueDepth++
+			case "dequeue":
+				stats.QueueDepth--
+			}
+		}
+
 		if l.Type == "user" || l.Type == "assistant" {
 			stats.MessageCount++
 			if l.Message.Role != "" {
@@ -255,6 +279,10 @@ func ScanJSONL(path string) (JSONLStats, error) {
 					cacheInput += u.InputTokens
 					cacheCreation += u.CacheCreationInputTokens
 				}
+				// F-006: count turns (non-synthetic assistant messages = turns).
+				if l.Message.Model != "<synthetic>" {
+					stats.TurnCount++
+				}
 			}
 		}
 	}
@@ -268,6 +296,16 @@ func ScanJSONL(path string) (JSONLStats, error) {
 		if denom > 0 {
 			stats.CacheEfficiency = float64(cacheRead) / float64(denom)
 		}
+	}
+
+	// F-006: compute api error rate.
+	if stats.TurnCount > 0 {
+		stats.ApiErrorRate = float64(stats.ApiErrorCount) / float64(stats.TurnCount)
+	}
+
+	// F-008: clamp queue depth to 0.
+	if stats.QueueDepth < 0 {
+		stats.QueueDepth = 0
 	}
 
 	return stats, sc.Err()

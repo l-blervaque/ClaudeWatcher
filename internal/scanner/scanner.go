@@ -138,6 +138,10 @@ func Scan(opts ScanOptions) ([]session.Session, error) {
 						IsSubagent:       stats.IsSubagent,
 						CacheEfficiency:  stats.CacheEfficiency,
 						AwaySummaryCount: stats.AwaySummaryCount,
+						ApiErrorCount:    stats.ApiErrorCount,
+						TurnCount:        stats.TurnCount,
+						ApiErrorRate:     stats.ApiErrorRate,
+						QueueDepth:       stats.QueueDepth,
 					})
 				}
 				continue
@@ -183,6 +187,10 @@ func Scan(opts ScanOptions) ([]session.Session, error) {
 				IsSubagent:       stats.IsSubagent,
 				CacheEfficiency:  stats.CacheEfficiency,
 				AwaySummaryCount: stats.AwaySummaryCount,
+				ApiErrorCount:    stats.ApiErrorCount,
+				TurnCount:        stats.TurnCount,
+				ApiErrorRate:     stats.ApiErrorRate,
+				QueueDepth:       stats.QueueDepth,
 			})
 		}
 	}
