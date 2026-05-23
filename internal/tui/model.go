@@ -13,9 +13,17 @@ import (
 	"github.com/ludo/claudewatcher/internal/config"
 	"github.com/ludo/claudewatcher/internal/scanner"
 	"github.com/ludo/claudewatcher/internal/session"
+	"github.com/ludo/claudewatcher/internal/version"
 )
 
 const refreshInterval = 2 * time.Second
+
+// Tab indices.
+const (
+	tabSessions  = 0
+	tabOptions   = 1
+	tabShortcuts = 2
+)
 
 // ---- styles ----
 
@@ -49,6 +57,28 @@ var (
 		session.StatusIdle:    lipgloss.NewStyle().Foreground(lipgloss.Color("#2196F3")),
 		session.StatusEnded:   lipgloss.NewStyle().Foreground(lipgloss.Color("#666")),
 	}
+
+	// Cache efficiency color styles.
+	cacheGoodStyle = lipgloss.NewStyle().Foreground(lipgloss.Color("#4CAF50"))
+	cacheMidStyle  = lipgloss.NewStyle().Foreground(lipgloss.Color("#FFC107"))
+	cacheBadStyle  = lipgloss.NewStyle().Foreground(lipgloss.Color("#F44336"))
+
+	// Badge styles.
+	badgeSubStyle   = lipgloss.NewStyle().Foreground(lipgloss.Color("#888"))
+	badgeMultiStyle = lipgloss.NewStyle().Foreground(lipgloss.Color("#FF9800"))
+	badgeErrStyle   = lipgloss.NewStyle().Foreground(lipgloss.Color("#F44336"))
+	badgeQueueStyle = lipgloss.NewStyle().Foreground(lipgloss.Color("#2196F3"))
+
+	// Footer box style.
+	footerBoxStyle = lipgloss.NewStyle().
+			Border(lipgloss.RoundedBorder()).
+			BorderForeground(lipgloss.Color("#444")).
+			Padding(0, 1)
+
+	// Options section header style.
+	sectionHeaderStyle = lipgloss.NewStyle().
+				Bold(true).
+				Foreground(lipgloss.Color("#888"))
 )
 
 // ---- messages ----
@@ -64,12 +94,13 @@ type sessionsMsg struct {
 type Model struct {
 	sessions     []session.Session
 	cursor       int
+	offset       int // scroll offset for the session list
 	width        int
 	height       int
 	err          error
 	detail       bool
 	includeEnded bool
-	options      bool
+	activeTab    int // 0=Sessions 1=Options 2=Raccourcis
 	optCursor    int
 	cfg          config.Config
 	prevStatus   map[string]session.Status
@@ -100,19 +131,26 @@ func tick() tea.Cmd {
 	})
 }
 
+// optionsMaxCursor is the highest valid optCursor index in the Options tab.
+// Sons: 0=toggle, 1=sound selector → 2 items
+// Colonnes: 2=ShowCache, 3=ShowCtx, 4=ShowMsgs, 5=ShowAge, 6=ShowBadges → 5 items
+// Display: 7=NerdFonts → 1 item
+// Total indices: 0..7 → 7
+const optionsMaxCursor = 7
+
 func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	switch msg := msg.(type) {
 	case tea.WindowSizeMsg:
 		m.width = msg.Width
 		m.height = msg.Height
 	case tea.KeyMsg:
-		if m.options {
+		if m.activeTab == tabOptions {
 			switch msg.String() {
-			case "q", "ctrl+c":
+			case "ctrl+q", "ctrl+c":
 				config.Save(m.cfg) //nolint:errcheck
 				return m, tea.Quit
 			case "j", "down":
-				if m.optCursor < 1 {
+				if m.optCursor < optionsMaxCursor {
 					m.optCursor++
 				}
 			case "k", "up":
@@ -137,32 +175,71 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 							m.cfg.SoundName = availableSounds[0]
 						}
 					}
+				case 2:
+					m.cfg.ShowCache = !m.cfg.ShowCache
+				case 3:
+					m.cfg.ShowCtx = !m.cfg.ShowCtx
+				case 4:
+					m.cfg.ShowMsgs = !m.cfg.ShowMsgs
+				case 5:
+					m.cfg.ShowAge = !m.cfg.ShowAge
+				case 6:
+					m.cfg.ShowBadges = !m.cfg.ShowBadges
+				case 7:
+					m.cfg.NerdFonts = !m.cfg.NerdFonts
 				}
+			case "tab":
+				m.activeTab = (m.activeTab + 1) % 3
+				config.Save(m.cfg) //nolint:errcheck
+			case "shift+tab":
+				m.activeTab = (m.activeTab + 2) % 3
+				config.Save(m.cfg) //nolint:errcheck
 			case "esc":
-				m.options = false
+				m.activeTab = tabSessions
 				config.Save(m.cfg) //nolint:errcheck
 			}
 			return m, nil
 		}
+		if m.activeTab == tabShortcuts {
+			switch msg.String() {
+			case "ctrl+q", "ctrl+c":
+				return m, tea.Quit
+			case "tab":
+				m.activeTab = (m.activeTab + 1) % 3
+			case "shift+tab":
+				m.activeTab = (m.activeTab + 2) % 3
+			case "esc":
+				m.activeTab = tabSessions
+			}
+			return m, nil
+		}
 		switch msg.String() {
-		case "q", "ctrl+c":
+		case "ctrl+q", "ctrl+c":
 			return m, tea.Quit
+		case "tab":
+			m.activeTab = (m.activeTab + 1) % 3
+		case "shift+tab":
+			m.activeTab = (m.activeTab + 2) % 3
 		case "j", "down":
 			if m.cursor < len(m.sessions)-1 {
 				m.cursor++
+				m.offset = clampOffset(m.cursor, m.offset, m.visibleRows())
 			}
 		case "k", "up":
 			if m.cursor > 0 {
 				m.cursor--
+				m.offset = clampOffset(m.cursor, m.offset, m.visibleRows())
 			}
 		case "r":
 			return m, loadSessions(m.includeEnded)
 		case "a":
 			m.includeEnded = !m.includeEnded
+			m.cursor = 0
+			m.offset = 0
 			return m, loadSessions(m.includeEnded)
 		case "o":
 			if !m.detail {
-				m.options = true
+				m.activeTab = tabOptions
 			}
 		case "enter":
 			m.detail = !m.detail
@@ -188,59 +265,139 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		if m.cursor < 0 {
 			m.cursor = 0
 		}
+		m.offset = clampOffset(m.cursor, m.offset, m.visibleRows())
 	}
 	return m, nil
 }
 
-// sortSessions: active > waiting > idle > ended, then by recency
+// sortSessions: active > waiting > idle > ended, then by recency.
+// Main sessions (ParentID == "") are sorted first, then each main session is
+// immediately followed by its active subagents sorted by recency.
 func sortSessions(s []session.Session) []session.Session {
-	sort.SliceStable(s, func(i, j int) bool {
-		if s[i].Status != s[j].Status {
-			return s[i].Status > s[j].Status
+	// Separate main sessions from subagents.
+	var mains, subs []session.Session
+	for _, sess := range s {
+		if sess.ParentID == "" {
+			mains = append(mains, sess)
+		} else {
+			subs = append(subs, sess)
 		}
-		return s[i].LastModified.After(s[j].LastModified)
+	}
+
+	// Sort main sessions: status desc, then recency desc.
+	sort.SliceStable(mains, func(i, j int) bool {
+		if mains[i].Status != mains[j].Status {
+			return mains[i].Status > mains[j].Status
+		}
+		return mains[i].LastModified.After(mains[j].LastModified)
 	})
-	return s
+
+	// Sort subagents: recency desc (status is always active at this point due to
+	// scanner filtering, but sort consistently anyway).
+	sort.SliceStable(subs, func(i, j int) bool {
+		if subs[i].Status != subs[j].Status {
+			return subs[i].Status > subs[j].Status
+		}
+		return subs[i].LastModified.After(subs[j].LastModified)
+	})
+
+	// Build a lookup of parentID → subagents.
+	subsByParent := map[string][]session.Session{}
+	for _, sub := range subs {
+		subsByParent[sub.ParentID] = append(subsByParent[sub.ParentID], sub)
+	}
+
+	// Interleave: each main session followed by its children.
+	out := make([]session.Session, 0, len(s))
+	for _, m := range mains {
+		out = append(out, m)
+		out = append(out, subsByParent[m.ID]...)
+	}
+	return out
 }
 
 // ---- render ----
 
 func (m Model) View() string {
 	if m.err != nil {
-		return fmt.Sprintf("Error: %v\n\nPress q to quit.", m.err)
+		return fmt.Sprintf("Error: %v\n\nPress ctrl+q to quit.", m.err)
 	}
 	if m.width == 0 {
 		return "Loading..."
 	}
-	if m.options {
-		return m.renderOptions()
-	}
 	if m.detail && len(m.sessions) > 0 {
 		return m.renderDetail()
 	}
-	return m.renderList()
+	switch m.activeTab {
+	case tabOptions:
+		return m.renderOptions()
+	case tabShortcuts:
+		return m.renderShortcuts()
+	default:
+		return m.renderList()
+	}
+}
+
+// renderTabBar returns the tab navigation bar string.
+func (m Model) renderTabBar() string {
+	tabs := []string{"Sessions", "Options", "Shortcuts"}
+	var parts []string
+	for i, t := range tabs {
+		if i == m.activeTab {
+			parts = append(parts, lipgloss.NewStyle().
+				Bold(true).Foreground(lipgloss.Color("#7D56F4")).
+				Underline(true).Render(t))
+		} else {
+			parts = append(parts, dimStyle.Render(t))
+		}
+	}
+	return strings.Join(parts, dimStyle.Render("  │  "))
+}
+
+// renderFooter returns a box-bordered footer with contextual shortcuts.
+func (m Model) renderFooter() string {
+	var content string
+	switch {
+	case m.detail:
+		content = "enter/esc back · ctrl+q quit"
+	case m.activeTab == tabOptions:
+		content = "j/k nav · space/enter toggle · tab Shortcuts · esc Sessions"
+	case m.activeTab == tabShortcuts:
+		content = "tab Sessions · shift+tab Options · ctrl+q quit"
+	default: // tabSessions
+		content = "j/k nav · enter detail · o options · a all/open · r refresh · ctrl+q quit"
+	}
+	w := m.width - 2
+	if w < 10 {
+		w = 10
+	}
+	return footerBoxStyle.Width(w).Render(dimStyle.Render(content))
 }
 
 func (m Model) renderOptions() string {
 	var b strings.Builder
-	b.WriteString(titleStyle.Render("Options"))
+	b.WriteString(m.renderTabBar())
 	b.WriteString("\n\n")
-	b.WriteString(headerStyle.Render("Sons"))
+
+	// --- Sons section ---
+	b.WriteString(sectionHeaderStyle.Render("Sounds"))
 	b.WriteString("\n")
 
 	check := "[ ]"
 	if m.cfg.SoundEnabled {
 		check = "[x]"
 	}
-	bar0, bar1 := unselectedBar, unselectedBar
-	if m.optCursor == 0 {
-		bar0 = cursorBar
-	} else {
-		bar1 = cursorBar
+
+	bars := make([]string, optionsMaxCursor+1) // indices 0..optionsMaxCursor
+	for i := range bars {
+		bars[i] = unselectedBar
+	}
+	if m.optCursor <= optionsMaxCursor {
+		bars[m.optCursor] = cursorBar
 	}
 
-	b.WriteString(bar0)
-	b.WriteString(fmt.Sprintf(" %s Activé\n", check))
+	b.WriteString(bars[0])
+	b.WriteString(fmt.Sprintf(" %s Enabled\n", check))
 
 	var sl strings.Builder
 	for i, name := range availableSounds {
@@ -253,29 +410,180 @@ func (m Model) renderOptions() string {
 			sl.WriteString("  ")
 		}
 	}
-	line1 := fmt.Sprintf(" Son : %s", sl.String())
-	b.WriteString(bar1)
+	line1 := fmt.Sprintf(" Sound: %s", sl.String())
+	b.WriteString(bars[1])
 	if m.cfg.SoundEnabled {
 		b.WriteString(line1)
 	} else {
 		b.WriteString(dimStyle.Render(line1))
 	}
 	b.WriteString("\n\n")
-	b.WriteString(dimStyle.Render("esc fermer · j/k nav · espace/enter toggle"))
+
+	// --- Colonnes section ---
+	b.WriteString(sectionHeaderStyle.Render("Columns"))
+	b.WriteString("\n")
+
+	colOptions := []struct {
+		label   string
+		enabled bool
+		idx     int
+	}{
+		{"Cache", m.cfg.ShowCache, 2},
+		{"Ctx", m.cfg.ShowCtx, 3},
+		{"Msgs", m.cfg.ShowMsgs, 4},
+		{"Age", m.cfg.ShowAge, 5},
+		{"Badges", m.cfg.ShowBadges, 6},
+	}
+	for _, col := range colOptions {
+		chk := "[ ]"
+		if col.enabled {
+			chk = "[x]"
+		}
+		b.WriteString(bars[col.idx])
+		b.WriteString(fmt.Sprintf(" %s %s\n", chk, col.label))
+	}
+
+	b.WriteString("\n")
+
+	// --- Display section ---
+	b.WriteString(sectionHeaderStyle.Render("Display"))
+	b.WriteString("\n")
+
+	nfCheck := "[ ]"
+	if m.cfg.NerdFonts {
+		nfCheck = "[x]"
+	}
+	b.WriteString(bars[7])
+	b.WriteString(fmt.Sprintf(" %s Nerd Fonts\n", nfCheck))
+
+	// Visual hint line below the toggle: if the glyph renders as an icon the font works.
+	if m.cfg.NerdFonts {
+		glyph := lipgloss.NewStyle().Bold(true).Render("") // fa-check U+F00C
+		b.WriteString(fmt.Sprintf("    → %s if you see an icon, Nerd Fonts work\n", glyph))
+	}
+
+	b.WriteString("\n")
+	b.WriteString(m.renderFooter())
+	return b.String()
+}
+
+// renderShortcuts shows all keyboard shortcuts.
+func (m Model) renderShortcuts() string {
+	var b strings.Builder
+	b.WriteString(m.renderTabBar())
+	b.WriteString("\n")
+
+	// Header line: title on the left, version on the right (same as renderList).
+	appTitle := titleStyle.Render("ClaudeWatcher")
+	ver := dimStyle.Render("v" + version.Version)
+	mode := "open"
+	if m.includeEnded {
+		mode = "all"
+	}
+	sessionInfo := dimStyle.Render(fmt.Sprintf("%d sessions · %s", len(m.sessions), mode))
+	titlePart := appTitle + "  " + sessionInfo
+	titlePartVisible := stripANSI(appTitle) + "  " + stripANSI(sessionInfo)
+	verVisible := stripANSI(ver)
+	gap := m.width - len(titlePartVisible) - len(verVisible)
+	if gap < 1 {
+		gap = 1
+	}
+	b.WriteString(titlePart)
+	b.WriteString(strings.Repeat(" ", gap))
+	b.WriteString(ver)
+	b.WriteString("\n\n")
+
+	b.WriteString(headerStyle.Render("Shortcuts"))
+	b.WriteString("\n\n")
+
+	shortcuts := [][2]string{
+		{"j / k", "navigate up/down"},
+		{"enter", "open detail"},
+		{"esc", "close detail"},
+		{"a", "show all / open sessions"},
+		{"r", "refresh now"},
+		{"o", "open Options"},
+		{"tab", "next tab"},
+		{"shift+tab", "previous tab"},
+		{"ctrl+q", "quit"},
+	}
+	colWidth := m.width/2 - 4
+	half := (len(shortcuts) + 1) / 2
+	for i := 0; i < half; i++ {
+		lKey := fmt.Sprintf("%-12s", shortcuts[i][0])
+		lDesc := fmt.Sprintf("%-*s", colWidth, shortcuts[i][1])
+		line := fmt.Sprintf("  %s  %s",
+			lipgloss.NewStyle().Bold(true).Render(lKey),
+			dimStyle.Render(lDesc))
+		if i+half < len(shortcuts) {
+			rKey := fmt.Sprintf("%-12s", shortcuts[i+half][0])
+			line += fmt.Sprintf("    %s  %s",
+				lipgloss.NewStyle().Bold(true).Render(rKey),
+				dimStyle.Render(shortcuts[i+half][1]))
+		}
+		b.WriteString(line + "\n")
+	}
+
+	// Badge reference section.
+	b.WriteString("\n")
+	b.WriteString(headerStyle.Render("Badge reference"))
+	b.WriteString("\n\n")
+
+	type badgeEntry struct {
+		asciiTag  string
+		nerdGlyph string
+		style     lipgloss.Style
+		label     string
+	}
+	entries := []badgeEntry{
+		{"[P]", "", badgeSubStyle, "principal session"},
+		{"[S]", "", badgeSubStyle, "subagent"},
+		{"[MULTI]", "", badgeMultiStyle, "multi-day session"},
+		{"[ERR]", "", badgeErrStyle, "API error rate > 5%"},
+		{"[Q:N]", " N", badgeQueueStyle, "N queued tasks"},
+	}
+	for _, e := range entries {
+		var tag string
+		if m.cfg.NerdFonts {
+			tag = e.style.Render(e.nerdGlyph)
+		} else {
+			tag = e.style.Render(e.asciiTag)
+		}
+		b.WriteString(fmt.Sprintf("  %-14s %s\n", tag, dimStyle.Render(e.label)))
+	}
+
+	b.WriteString("\n")
+	b.WriteString(m.renderFooter())
 	return b.String()
 }
 
 func (m Model) renderList() string {
 	var b strings.Builder
 
-	header := titleStyle.Render("ClaudeWatcher")
-	b.WriteString(header)
-	b.WriteString("  ")
+	// Tab bar.
+	b.WriteString(m.renderTabBar())
+	b.WriteString("\n")
+
+	// Header line: title on the left, version on the right.
+	appTitle := titleStyle.Render("ClaudeWatcher")
+	ver := dimStyle.Render("v" + version.Version)
 	mode := "open"
 	if m.includeEnded {
 		mode = "all"
 	}
-	b.WriteString(dimStyle.Render(fmt.Sprintf("%d sessions · %s", len(m.sessions), mode)))
+	sessionInfo := dimStyle.Render(fmt.Sprintf("%d sessions · %s", len(m.sessions), mode))
+	// Build header with version right-aligned.
+	titlePart := appTitle + "  " + sessionInfo
+	// Rough visible length of titlePart (strip ANSI for width calculation).
+	titlePartVisible := stripANSI(appTitle) + "  " + stripANSI(sessionInfo)
+	verVisible := stripANSI(ver)
+	gap := m.width - len(titlePartVisible) - len(verVisible)
+	if gap < 1 {
+		gap = 1
+	}
+	b.WriteString(titlePart)
+	b.WriteString(strings.Repeat(" ", gap))
+	b.WriteString(ver)
 	b.WriteString("\n\n")
 
 	narrow := m.width < 80
@@ -287,20 +595,121 @@ func (m Model) renderList() string {
 	}
 
 	b.WriteString("\n")
-	b.WriteString(dimStyle.Render("j/k nav · enter detail · o options · a all/open · r refresh · q quit"))
+	b.WriteString(m.renderFooter())
 	return b.String()
 }
 
+// sessionBadges returns the inline badges string for a session (e.g. "[S] [MULTI]").
+// When dim is true (idle or ended sessions), all badges are rendered in dimStyle.
+// When nerd is true, compact Nerd Font icons are used instead of ASCII text badges.
+func sessionBadges(s session.Session, dim bool, nerd bool) string {
+	badge := func(style lipgloss.Style, text string) string {
+		if dim {
+			return dimStyle.Render(text)
+		}
+		return style.Render(text)
+	}
+	var parts []string
+	if nerd {
+		// Nerd Font compact icons.
+		if s.IsSubagent {
+			parts = append(parts, badge(badgeSubStyle, "")) // nf-fa-sitemap U+F0E8
+		} else {
+			parts = append(parts, badge(badgeSubStyle, "")) // fa-user U+F007
+		}
+		if s.AwaySummaryCount >= 1 {
+			parts = append(parts, badge(badgeMultiStyle, "")) // fa-calendar U+F073
+		}
+		if s.ApiErrorRate > 0.05 {
+			parts = append(parts, badge(badgeErrStyle, "")) // nf-fa-exclamation_triangle U+F071
+		}
+		if s.QueueDepth > 0 {
+			parts = append(parts, badge(badgeQueueStyle, fmt.Sprintf(" %d", s.QueueDepth))) // nf-fa-tasks U+F0AE
+		}
+	} else {
+		// Plain ASCII badges.
+		if s.IsSubagent {
+			parts = append(parts, badge(badgeSubStyle, "[S]"))
+		} else {
+			parts = append(parts, badge(badgeSubStyle, "[P]"))
+		}
+		if s.AwaySummaryCount >= 1 {
+			parts = append(parts, badge(badgeMultiStyle, "[MULTI]"))
+		}
+		if s.ApiErrorRate > 0.05 {
+			parts = append(parts, badge(badgeErrStyle, "[ERR]"))
+		}
+		if s.QueueDepth > 0 {
+			parts = append(parts, badge(badgeQueueStyle, fmt.Sprintf("[Q:%d]", s.QueueDepth)))
+		}
+	}
+	return strings.Join(parts, " ")
+}
+
+// Column widths for the wide layout — single source of truth used by both
+// the header and data rows to prevent alignment drift.
+const (
+	wideColProj  = 20
+	wideColCtx   = 5
+	wideColCache = 7
+	wideColMsg   = 5
+	wideColAgo   = 8
+	wideColBadge = 12
+	// gap chars between columns: icon(1) + spaces between each col = 7 separators
+	wideColGaps = 7
+)
+
+// visibleRows returns how many sessions fit on screen given the current layout.
+// Narrow layout uses 3 lines per session; wide uses 1 line per session.
+// ~8 lines are reserved for tab bar, header, and footer box.
+func (m Model) visibleRows() int {
+	reserved := 8
+	available := m.height - reserved
+	if available < 1 {
+		return 1
+	}
+	if m.width < 80 {
+		rows := available / 3
+		if rows < 1 {
+			return 1
+		}
+		return rows
+	}
+	return available
+}
+
+// clampOffset adjusts the scroll offset so that cursor stays within the
+// visible window [offset, offset+visibleRows).
+func clampOffset(cursor, offset, visibleRows int) int {
+	if cursor < offset {
+		return cursor
+	}
+	if cursor >= offset+visibleRows {
+		return cursor - visibleRows + 1
+	}
+	return offset
+}
+
 // renderListNarrow: three lines per session.
-//   ● Session title ················· active
-//     customer-biogen
-//     ctx 46% · 42 msgs · 2m
+//
+//	● Session title ················· active
+//	  customer-biogen
+//	  ctx 46% · 42 msgs · 2m
 func (m Model) renderListNarrow() string {
 	var b strings.Builder
 
-	for i, s := range m.sessions {
+	visible := m.visibleRows()
+	end := m.offset + visible
+	if end > len(m.sessions) {
+		end = len(m.sessions)
+	}
+
+	for i := m.offset; i < end; i++ {
+		s := m.sessions[i]
 		st := statusStyles[s.Status]
-		icon := st.Render(s.Status.Icon())
+		icon := st.Render(session.StatusIcon(s.Status, m.cfg.NerdFonts))
+		// Idle and ended sessions use dimStyle for badges and column values.
+		dim := s.Status == session.StatusIdle || s.Status == session.StatusEnded
 
 		title := s.Title
 		if title == "" {
@@ -310,7 +719,12 @@ func (m Model) renderListNarrow() string {
 
 		// line 1: icon + title ··· status, with dotted leader
 		// budget: width - 2 (icon+space) - len(status) - 1 (space before status)
-		leftBudget := m.width - 2 - len(status) - 1
+		// Reduce by 4 for subagents to account for the "    " indent prefix.
+		indentW := 0
+		if s.ParentID != "" {
+			indentW = 4
+		}
+		leftBudget := m.width - 2 - len(status) - 1 - indentW
 		if leftBudget < 8 {
 			leftBudget = 8
 		}
@@ -325,25 +739,45 @@ func (m Model) renderListNarrow() string {
 			dimStyle.Render(strings.Repeat("·", fillN)),
 			st.Render(status))
 
-		line2 := fmt.Sprintf("  %s", truncate(s.ProjectName, m.width-2))
-		line3 := fmt.Sprintf("  ctx %s · %d msgs · %s",
-			contextPct(s.ContextTokens, s.Model), s.MessageCount, humanizeAgo(s.LastModified))
+		badges := sessionBadges(s, dim, m.cfg.NerdFonts)
+		line2 := fmt.Sprintf("  %s  %s", truncate(s.ProjectName, m.width-2), badges)
+		var line3parts []string
+		if m.cfg.ShowCtx {
+			line3parts = append(line3parts, "ctx "+contextPct(s.ContextTokens, s.Model))
+		}
+		if m.cfg.ShowMsgs {
+			line3parts = append(line3parts, fmt.Sprintf("%d msgs", s.MessageCount))
+		}
+		if m.cfg.ShowAge {
+			line3parts = append(line3parts, humanizeAgo(s.LastModified))
+		}
+		line3 := "  " + strings.Join(line3parts, " · ")
+
+		// Subagents get a 4-space indent prefix on every line.
+		indent := ""
+		if s.ParentID != "" {
+			indent = "    "
+		}
 
 		bar := unselectedBar
 		if i == m.cursor {
 			bar = cursorBar
 		}
 		b.WriteString(bar)
+		b.WriteString(indent)
 		b.WriteString(line1)
 		b.WriteString("\n")
 		b.WriteString(bar)
+		b.WriteString(indent)
 		b.WriteString(line2)
 		b.WriteString("\n")
 		b.WriteString(bar)
-		if i == m.cursor {
-			b.WriteString(line3)
-		} else {
+		b.WriteString(indent)
+		// Non-selected rows: always dim. Selected rows: dim only for idle/ended.
+		if i != m.cursor || dim {
 			b.WriteString(dimStyle.Render(line3))
+		} else {
+			b.WriteString(line3)
 		}
 		b.WriteString("\n")
 	}
@@ -351,45 +785,161 @@ func (m Model) renderListNarrow() string {
 }
 
 // renderListWide: one row per session.
+// columns: status(1) space project(wideColProj) title(flex) [ctx] [cache] [msgs] [ago] [badges]
 func (m Model) renderListWide() string {
 	var b strings.Builder
 
-	// columns: status(2) project(20) title(flex) ctx(5) msgs(5) ago(8)
-	projW, ctxW, msgW, agoW := 20, 5, 5, 8
-	titleW := m.width - 2 - projW - ctxW - msgW - agoW - 5
+	// Compute titleW by subtracting only the visible optional columns.
+	optColsW := 0
+	if m.cfg.ShowCtx {
+		optColsW += wideColCtx + 1
+	}
+	if m.cfg.ShowCache {
+		optColsW += wideColCache + 1
+	}
+	if m.cfg.ShowMsgs {
+		optColsW += wideColMsg + 1
+	}
+	if m.cfg.ShowAge {
+		optColsW += wideColAgo + 1
+	}
+	if m.cfg.ShowBadges {
+		optColsW += wideColBadge + 2
+	}
+
+	// Fixed: bar(1) + icon(1) + space(1) + project + space(1) = 4
+	titleW := m.width - 4 - wideColProj - optColsW
 	if titleW < 10 {
 		titleW = 10
 	}
 
-	header := fmt.Sprintf("  %-*s %-*s %*s %*s %*s",
-		projW, "PROJECT", titleW, "TITLE", ctxW, "CTX", msgW, "MSGS", agoW, "AGE")
-	b.WriteString(headerStyle.Render(header))
+	// Build header.
+	var hdr strings.Builder
+	hdr.WriteString(fmt.Sprintf("  %-*s %-*s",
+		wideColProj, "PROJECT",
+		titleW, "TITLE"))
+	if m.cfg.ShowCtx {
+		hdr.WriteString(fmt.Sprintf(" %*s", wideColCtx, "CTX"))
+	}
+	if m.cfg.ShowCache {
+		hdr.WriteString(fmt.Sprintf(" %*s", wideColCache, "CACHE"))
+	}
+	if m.cfg.ShowMsgs {
+		hdr.WriteString(fmt.Sprintf(" %*s", wideColMsg, "MSGS"))
+	}
+	if m.cfg.ShowAge {
+		hdr.WriteString(fmt.Sprintf(" %*s", wideColAgo, "AGE"))
+	}
+	if m.cfg.ShowBadges {
+		hdr.WriteString(fmt.Sprintf("  %-*s", wideColBadge, "BADGES"))
+	}
+	b.WriteString(headerStyle.Render(hdr.String()))
 	b.WriteString("\n")
 
-	for i, s := range m.sessions {
+	visible := m.visibleRows()
+	end := m.offset + visible
+	if end > len(m.sessions) {
+		end = len(m.sessions)
+	}
+
+	for i := m.offset; i < end; i++ {
+		s := m.sessions[i]
 		st := statusStyles[s.Status]
-		icon := st.Render(s.Status.Icon())
+		// Subagents get a tree-branch prefix instead of just the icon.
+		iconRaw := st.Render(session.StatusIcon(s.Status, m.cfg.NerdFonts))
+		isSubagent := s.ParentID != ""
+		// titleW for subagents is reduced by the extra prefix width (4 chars: "  └ ").
+		rowTitleW := titleW
+		if isSubagent {
+			rowTitleW -= 4
+			if rowTitleW < 6 {
+				rowTitleW = 6
+			}
+		}
 		title := s.Title
 		if title == "" {
 			title = "—"
 		}
-		row := fmt.Sprintf("%s %-*s %-*s %*s %*d %*s",
-			icon,
-			projW, truncate(s.ProjectName, projW),
-			titleW, truncate(title, titleW),
-			ctxW, contextPct(s.ContextTokens, s.Model),
-			msgW, s.MessageCount,
-			agoW, humanizeAgo(s.LastModified))
+		// Idle and ended sessions use dimStyle for all column values and badges.
+		dim := s.Status == session.StatusIdle || s.Status == session.StatusEnded
+
+		var row strings.Builder
+		projStr := fmt.Sprintf("%-*s", wideColProj, truncate(s.ProjectName, wideColProj))
+		titleStr := fmt.Sprintf("%-*s", rowTitleW, truncate(title, rowTitleW))
+		if dim {
+			projStr = dimStyle.Render(projStr)
+			titleStr = dimStyle.Render(titleStr)
+		}
+		if isSubagent {
+			row.WriteString(fmt.Sprintf("  └ %s %s %s", iconRaw, projStr, titleStr))
+		} else {
+			row.WriteString(fmt.Sprintf("%s %s %s", iconRaw, projStr, titleStr))
+		}
+
+		if m.cfg.ShowCtx {
+			ctxStr := fmt.Sprintf("%*s", wideColCtx, contextPct(s.ContextTokens, s.Model))
+			if dim {
+				ctxStr = dimStyle.Render(ctxStr)
+			}
+			row.WriteString(" ")
+			row.WriteString(ctxStr)
+		}
+		if m.cfg.ShowCache {
+			cacheStr := cachePct(s.CacheEfficiency, dim)
+			row.WriteString(" ")
+			row.WriteString(padRight(cacheStr, wideColCache))
+		}
+		if m.cfg.ShowMsgs {
+			msgsStr := fmt.Sprintf("%*s", wideColMsg, fmt.Sprintf("%d", s.MessageCount))
+			if dim {
+				msgsStr = dimStyle.Render(msgsStr)
+			}
+			row.WriteString(" ")
+			row.WriteString(msgsStr)
+		}
+		if m.cfg.ShowAge {
+			ageStr := fmt.Sprintf("%*s", wideColAgo, humanizeAgo(s.LastModified))
+			if dim {
+				ageStr = dimStyle.Render(ageStr)
+			}
+			row.WriteString(" ")
+			row.WriteString(ageStr)
+		}
+		if m.cfg.ShowBadges {
+			badges := sessionBadges(s, dim, m.cfg.NerdFonts)
+			row.WriteString("  ")
+			row.WriteString(badges)
+		}
 
 		bar := unselectedBar
 		if i == m.cursor {
 			bar = cursorBar
 		}
 		b.WriteString(bar)
-		b.WriteString(row)
+		b.WriteString(row.String())
 		b.WriteString("\n")
 	}
 	return b.String()
+}
+
+// cachePct returns the cache efficiency as a colored string, or "--".
+// When dim is true (idle or ended sessions), the value is rendered in dimStyle.
+func cachePct(eff float64, dim bool) string {
+	if eff < 0 {
+		return dimStyle.Render("--")
+	}
+	pct := int(eff * 100)
+	s := fmt.Sprintf("%d%%", pct)
+	if dim {
+		return dimStyle.Render(s)
+	}
+	if pct >= 85 {
+		return cacheGoodStyle.Render(s)
+	}
+	if pct >= 70 {
+		return cacheMidStyle.Render(s)
+	}
+	return cacheBadStyle.Render(s)
 }
 
 func (m Model) renderDetail() string {
@@ -403,8 +953,18 @@ func (m Model) renderDetail() string {
 	// Project + status
 	b.WriteString(fmt.Sprintf("Project:  %s\n", s.ProjectName))
 	b.WriteString(dimStyle.Render(fmt.Sprintf("          %s\n", s.ProjectPath)))
-	b.WriteString(fmt.Sprintf("Status:   %s %s\n", st.Render(s.Status.Icon()), st.Render(s.Status.Label())))
+	b.WriteString(fmt.Sprintf("Status:   %s %s\n", st.Render(session.StatusIcon(s.Status, m.cfg.NerdFonts)), st.Render(s.Status.Label())))
 	b.WriteString(fmt.Sprintf("Session:  %s\n", s.ID))
+	// Type badge.
+	typeLabel := "Principal [P]"
+	if s.IsSubagent {
+		typeLabel = "Subagent [S]"
+	}
+	b.WriteString(fmt.Sprintf("Type:     %s\n", badgeSubStyle.Render(typeLabel)))
+	if s.AwaySummaryCount >= 1 {
+		b.WriteString(fmt.Sprintf("Multi:    %s (%d away summaries)\n",
+			badgeMultiStyle.Render("[MULTI]"), s.AwaySummaryCount))
+	}
 
 	// Titles — show source breakdown so user sees /rename vs ai-title vs prompt
 	b.WriteString("\n")
@@ -426,22 +986,30 @@ func (m Model) renderDetail() string {
 	b.WriteString("\n")
 	b.WriteString(fmt.Sprintf("  Context:  %s (%d / %d tokens)\n",
 		contextPct(s.ContextTokens, s.Model), s.ContextTokens, session.ContextWindowFor(s.Model)))
+	b.WriteString(fmt.Sprintf("  Cache:    %s\n", cachePct(s.CacheEfficiency, false)))
 	b.WriteString(fmt.Sprintf("  Messages: %d\n", s.MessageCount))
 	b.WriteString(fmt.Sprintf("  Last:     %s (%s)\n",
 		humanizeAgo(s.LastModified), s.LastModified.Format("2006-01-02 15:04:05")))
+	if s.ApiErrorCount > 0 {
+		b.WriteString(fmt.Sprintf("  API Err:  %d errors (%.0f%% of turns)\n",
+			s.ApiErrorCount, s.ApiErrorRate*100))
+	}
+	if s.QueueDepth > 0 {
+		b.WriteString(fmt.Sprintf("  Queue:    %d pending tasks\n", s.QueueDepth))
+	}
 
 	// Last assistant message preview
 	if s.LastAssistant != "" {
 		b.WriteString("\n")
 		b.WriteString(headerStyle.Render("Last message"))
 		b.WriteString("\n")
-		b.WriteString(wrapPreview(s.LastAssistant, m.width-2, 8))
+		b.WriteString(wrapPreview(s.LastAssistant, m.width-4, 12))
 	}
 
 	b.WriteString("\n")
 	b.WriteString(dimStyle.Render(fmt.Sprintf("jsonl: %s\n", s.JSONLPath)))
 	b.WriteString("\n")
-	b.WriteString(dimStyle.Render("enter/esc back · q quit"))
+	b.WriteString(m.renderFooter())
 	return b.String()
 }
 
@@ -477,23 +1045,58 @@ func contextPct(tokens int, model string) string {
 	return fmt.Sprintf("%d%%", pct)
 }
 
-// wrapPreview wraps text to width, capped at maxLines, with "  " prefix.
-func wrapPreview(s string, width, maxLines int) string {
-	s = strings.Join(strings.Fields(s), " ")
+// wrapText splits text on existing \n, then word-wraps each line to width.
+func wrapText(text string, width int) string {
 	if width < 10 {
 		width = 10
 	}
-	var out []string
-	for len(s) > 0 && len(out) < maxLines {
-		if len(s) <= width-2 {
-			out = append(out, "  "+s)
-			break
+	var result []string
+	for _, line := range strings.Split(text, "\n") {
+		if len(line) <= width {
+			result = append(result, line)
+			continue
 		}
-		out = append(out, "  "+s[:width-2])
-		s = s[width-2:]
+		words := strings.Fields(line)
+		current := ""
+		for _, w := range words {
+			if current == "" {
+				current = w
+			} else if len(current)+1+len(w) <= width {
+				current += " " + w
+			} else {
+				result = append(result, current)
+				current = w
+			}
+		}
+		if current != "" {
+			result = append(result, current)
+		}
 	}
-	if len(s) > 0 && len(out) == maxLines {
-		out[maxLines-1] = strings.TrimRight(out[maxLines-1], " ") + "…"
+	return strings.Join(result, "\n")
+}
+
+// wrapPreview wraps text preserving \n, word-wraps to width, caps at maxLines,
+// and adds a "  " prefix to each line.
+func wrapPreview(s string, width, maxLines int) string {
+	if width < 10 {
+		width = 10
+	}
+	// word-wrap preserving existing newlines (use inner width for the "  " prefix)
+	wrapped := wrapText(strings.TrimRight(s, "\n"), width-2)
+	lines := strings.Split(wrapped, "\n")
+
+	truncated := false
+	if len(lines) > maxLines {
+		lines = lines[:maxLines]
+		truncated = true
+	}
+
+	var out []string
+	for _, l := range lines {
+		out = append(out, "  "+l)
+	}
+	if truncated {
+		out = append(out, "  [...]")
 	}
 	return strings.Join(out, "\n") + "\n"
 }
@@ -512,10 +1115,12 @@ func truncate(s string, w int) string {
 }
 
 func padRight(s string, w int) string {
-	if len(s) >= w {
+	// padRight pads the visible string (after stripping ANSI) to w runes.
+	vis := stripANSI(s)
+	if len(vis) >= w {
 		return s
 	}
-	return s + strings.Repeat(" ", w-len(s))
+	return s + strings.Repeat(" ", w-len(vis))
 }
 
 // stripANSI: very rough ANSI escape stripper for length-based padding when
