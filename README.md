@@ -16,14 +16,19 @@ CLI process). Press `a` to also show ended ones.
 
 For each session:
 
-- **Title** — uses `/rename` value if set, else Claude's auto-generated
-  `ai-title`, else the first user prompt
 - **Status** — `● active` / `◐ waiting` / `○ idle` / `✓ ended`
 - **Project** — the working directory's basename
+- **Title** — uses `/rename` value if set, else Claude's auto-generated
+  `ai-title`, else the first user prompt
 - **Context %** — based on the last assistant message's token usage,
-  against a 200K context window
+  against a 200K context window (color-coded: green / yellow / red)
+- **Cache %** — read cache hit rate for the session
 - **Messages** — total user + assistant message count
 - **Last activity** — relative time (`30s`, `2m`, `1h`, …)
+- **Badges** — `[P]` principal · `[S]` subagent · `[MULTI]` compacted ·
+  `[ERR]` API errors · `[Q:N]` pending queue
+
+Subagent sessions are grouped under their parent with a tree indent (`└`).
 
 Press `enter` on a session to see the detail view: full title breakdown
 (custom / ai / prompt), exact context tokens, jsonl path, and a preview
@@ -36,6 +41,29 @@ of the last assistant message.
 - macOS (Linux likely works but is untested — `pgrep -x` and `lsof` flags
   may need tweaking)
 - Go 1.22+
+
+### Nerd Font (optional but recommended)
+
+Status icons and badges look best with a Nerd Font. Without one, enable
+the plain-text fallback in **Options → Display → Nerd Fonts** (off by
+default).
+
+Install via Homebrew:
+
+```bash
+# Pick any Nerd Font — JetBrains Mono is a solid default
+brew install --cask font-jetbrains-mono-nerd-font
+
+# Other popular choices
+brew install --cask font-fira-code-nerd-font
+brew install --cask font-meslo-lg-nerd-font
+```
+
+Then set the installed font in your terminal emulator, and enable
+**Nerd Fonts** in ClaudeWatcher's Options tab.
+
+Alternatively, download any font from [nerdfonts.com](https://www.nerdfonts.com/font-downloads),
+unzip, and double-click the `.ttf` / `.otf` files to install via Font Book.
 
 ### From source
 
@@ -60,17 +88,41 @@ go install ./cmd/cw
 
 ## Keys
 
-| Key       | Action                                  |
-|-----------|-----------------------------------------|
-| `j` / `↓` | Move cursor down                        |
-| `k` / `↑` | Move cursor up                          |
-| `enter`   | Toggle detail view for selected session |
-| `esc`     | Leave detail view                       |
-| `a`       | Toggle "open only" / "all sessions"     |
-| `r`       | Refresh now                             |
-| `q`       | Quit                                    |
+### Sessions tab
+
+| Key           | Action                                  |
+|---------------|-----------------------------------------|
+| `j` / `↓`     | Move cursor down                        |
+| `k` / `↑`     | Move cursor up                          |
+| `enter`       | Toggle detail view for selected session |
+| `esc`         | Leave detail view                       |
+| `a`           | Toggle "open only" / "all sessions"     |
+| `r`           | Refresh now                             |
+| `o`           | Open Options tab                        |
+| `tab`         | Next tab (Sessions → Options → Shortcuts) |
+| `shift+tab`   | Previous tab                            |
+| `ctrl+q`      | Quit                                    |
+
+### Options tab
+
+| Key             | Action                          |
+|-----------------|---------------------------------|
+| `j` / `↓`       | Move cursor down                |
+| `k` / `↑`       | Move cursor up                  |
+| `space` / `enter` | Toggle selected option        |
+| `tab`           | Go to Shortcuts tab             |
+| `esc`           | Back to Sessions                |
 
 The list also auto-refreshes every 2 seconds.
+
+## Options
+
+Open with `o` or the `tab` key. Available toggles:
+
+- **Sounds** — enable / disable notification sounds, choose sound
+- **Columns** — show/hide Cache, Ctx, Msgs, Age, Badges columns individually
+- **Display → Nerd Fonts** — use Nerd Font glyphs for status icons (requires
+  a Nerd Font installed and set in your terminal)
 
 ## How it works
 
@@ -83,8 +135,11 @@ The list also auto-refreshes every 2 seconds.
    - First user prompt
    - Token usage from the last assistant message
    - Last assistant message text (for the detail preview)
+   - API error count, queue depth, subagent relationship
 4. For each project with N running processes, the N most recently
    modified `.jsonl` files are marked as "open"
+5. Subagent sessions are grouped under their parent and inherit the
+   parent's "open" status if recently modified
 
 ## Stack
 
