@@ -32,3 +32,15 @@ Thumbs.db
 
 # Logs
 *.log
+
+# Internal docs — specs, notes, analyses, release prep (local only)
+docs/meta/
+docs/superpowers/
+docs/session_analysis/
+docs/v2_notes.md
+docs/v2_specs.md
+docs/v2_specs_ui.md
+docs/RELEASE_NOTES.md
+
+# Claude Code internal state
+.claude/
