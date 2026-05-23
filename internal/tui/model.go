@@ -524,6 +524,34 @@ func (m Model) renderShortcuts() string {
 		b.WriteString(line + "\n")
 	}
 
+	// Badge reference section.
+	b.WriteString("\n")
+	b.WriteString(headerStyle.Render("Badge reference"))
+	b.WriteString("\n\n")
+
+	type badgeEntry struct {
+		asciiTag  string
+		nerdGlyph string
+		style     lipgloss.Style
+		label     string
+	}
+	entries := []badgeEntry{
+		{"[P]", "", badgeSubStyle, "principal session"},
+		{"[S]", "", badgeSubStyle, "subagent"},
+		{"[MULTI]", "", badgeMultiStyle, "multi-day session"},
+		{"[ERR]", "", badgeErrStyle, "API error rate > 5%"},
+		{"[Q:N]", " N", badgeQueueStyle, "N queued tasks"},
+	}
+	for _, e := range entries {
+		var tag string
+		if m.cfg.NerdFonts {
+			tag = e.style.Render(e.nerdGlyph)
+		} else {
+			tag = e.style.Render(e.asciiTag)
+		}
+		b.WriteString(fmt.Sprintf("  %-14s %s\n", tag, dimStyle.Render(e.label)))
+	}
+
 	b.WriteString("\n")
 	b.WriteString(m.renderFooter())
 	return b.String()
