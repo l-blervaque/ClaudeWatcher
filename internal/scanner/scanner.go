@@ -136,6 +136,7 @@ func Scan(opts ScanOptions) ([]session.Session, error) {
 						Model:            stats.Model,
 						LastAssistant:    stats.LastAssistant,
 						IsSubagent:       stats.IsSubagent,
+						ParentID:         f.Name(), // directory name = parent session UUID
 						CacheEfficiency:  stats.CacheEfficiency,
 						AwaySummaryCount: stats.AwaySummaryCount,
 						ApiErrorCount:    stats.ApiErrorCount,
@@ -195,12 +196,19 @@ func Scan(opts ScanOptions) ([]session.Session, error) {
 		}
 	}
 
-	// Group by project, mark the top-N most-recent jsonl as having a
-	// process, where N = number of running claude processes in that cwd.
+	// Group by project, mark the top-N most-recent MAIN session jsonl files as
+	// having a process, where N = number of running claude processes in that cwd.
+	// Subagent sessions are excluded from this competition: they inherit
+	// HasProcess from their parent main session in the second pass below.
 	byPath := map[string][]int{}
 	for i, s := range all {
+		if s.ParentID != "" {
+			continue // subagents handled separately
+		}
 		byPath[s.ProjectPath] = append(byPath[s.ProjectPath], i)
 	}
+	// Build a set of main session IDs that have a process, for the subagent pass.
+	mainHasProcess := map[string]bool{}
 	for path, idxs := range byPath {
 		n := procCount[path]
 		if n == 0 {
@@ -213,6 +221,16 @@ func Scan(opts ScanOptions) ([]session.Session, error) {
 			n = len(idxs)
 		}
 		for _, i := range idxs[:n] {
+			all[i].HasProcess = true
+			mainHasProcess[all[i].ID] = true
+		}
+	}
+	// Subagents inherit HasProcess from their parent main session only if
+	// their jsonl file was modified recently (same 5-minute threshold used by
+	// DetermineStatus). Stale/finished subagents must never inherit the flag
+	// just because their parent process is still alive.
+	for i, s := range all {
+		if s.ParentID != "" && mainHasProcess[s.ParentID] && now.Sub(s.LastModified) < 5*time.Minute {
 			all[i].HasProcess = true
 		}
 	}
@@ -235,7 +253,7 @@ func cleanTitle(s string) string {
 }
 
 // resolveTitle picks the best display title and reports its source.
-// Priority: /rename > AI-generated > first user prompt.
+// Priority: /rename > AI-generated > first user prompt (or last assistant for subagents).
 func resolveTitle(s session.JSONLStats) (string, string) {
 	if t := cleanTitle(s.CustomTitle); t != "" {
 		return t, "custom"
@@ -243,8 +261,27 @@ func resolveTitle(s session.JSONLStats) (string, string) {
 	if t := cleanTitle(s.AiTitle); t != "" {
 		return t, "ai"
 	}
+	if s.IsSubagent {
+		if t := cleanTitle(truncate(s.LastAssistant, 120)); t != "" {
+			return t, "last_assistant"
+		}
+	}
 	if t := cleanTitle(s.FirstPrompt); t != "" {
 		return t, "prompt"
 	}
 	return "", ""
+}
+
+// truncate returns the first n runes of s, trimming at a word boundary when possible.
+func truncate(s string, n int) string {
+	runes := []rune(s)
+	if len(runes) <= n {
+		return s
+	}
+	cut := string(runes[:n])
+	// Walk back to last space for a cleaner break.
+	if idx := strings.LastIndex(cut, " "); idx > n/2 {
+		cut = cut[:idx]
+	}
+	return cut
 }

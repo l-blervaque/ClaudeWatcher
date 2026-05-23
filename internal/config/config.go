@@ -18,6 +18,10 @@ type Config struct {
 	ShowMsgs   bool `json:"show_msgs"`
 	ShowAge    bool `json:"show_age"`
 	ShowBadges bool `json:"show_badges"`
+
+	// NerdFonts enables Nerd Font icons instead of plain Unicode/ASCII symbols.
+	// Opt-in: false by default so plain terminals are not affected.
+	NerdFonts bool `json:"nerd_fonts"`
 }
 
 var defaults = Config{
