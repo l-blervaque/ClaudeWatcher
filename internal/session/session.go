@@ -32,6 +32,24 @@ func (s Status) Icon() string {
 	}
 }
 
+// StatusIcon returns the icon for a status, using Nerd Font glyphs when nerd
+// is true and plain Unicode symbols otherwise.
+func StatusIcon(s Status, nerd bool) string {
+	if !nerd {
+		return s.Icon()
+	}
+	switch s {
+	case StatusActive:
+		return "" // fa-circle U+F111
+	case StatusWaiting:
+		return "" // fa-clock-o U+F017
+	case StatusIdle:
+		return "" // fa-circle-o U+F10C
+	default:
+		return "" // fa-check-circle U+F058
+	}
+}
+
 func (s Status) Label() string {
 	switch s {
 	case StatusActive:
@@ -64,7 +82,8 @@ type Session struct {
 	LastAssistant   string
 	Status          Status
 	HasProcess      bool
-	IsSubagent      bool    // true if no main-session marker lines found in first 30 lines
+	IsSubagent      bool   // true if no main-session marker lines found in first 30 lines
+	ParentID        string // non-empty for subagent sessions: UUID of the parent main session
 	CacheEfficiency float64 // cache_read / (input + cache_read + cache_creation), -1 if not calculable
 	AwaySummaryCount int   // number of "system" lines with subtype "away_summary"
 	ApiErrorCount   int
