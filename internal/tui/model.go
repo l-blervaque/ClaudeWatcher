@@ -458,7 +458,7 @@ func (m Model) renderOptions() string {
 
 	// Visual hint line below the toggle: if the glyph renders as an icon the font works.
 	if m.cfg.NerdFonts {
-		glyph := lipgloss.NewStyle().Bold(true).Render("") // fa-check U+F00C
+		glyph := lipgloss.NewStyle().Foreground(lipgloss.Color("#4CAF50")).Bold(true).Render("") // fa-check-circle U+F058
 		b.WriteString(fmt.Sprintf("    → %s if you see an icon, Nerd Fonts work\n", glyph))
 	}
 
@@ -536,11 +536,11 @@ func (m Model) renderShortcuts() string {
 		label     string
 	}
 	entries := []badgeEntry{
-		{"[P]", "", badgeSubStyle, "principal session"},
-		{"[S]", "", badgeSubStyle, "subagent"},
-		{"[MULTI]", "", badgeMultiStyle, "multi-day session"},
-		{"[ERR]", "", badgeErrStyle, "API error rate > 5%"},
-		{"[Q:N]", " N", badgeQueueStyle, "N queued tasks"},
+		{"[P]", "\uEE0D", badgeSubStyle, "principal session"},
+		{"[S]", "\U000F0B46", badgeSubStyle, "subagent"},
+		{"[MULTI]", "\uEF38", badgeMultiStyle, "multi-day session"},
+		{"[ERR]", "\uEA87", badgeErrStyle, "API error rate > 5%"},
+		{"[Q:N]", "\U000F1571 N", badgeQueueStyle, "N queued tasks"},
 	}
 	for _, e := range entries {
 		var tag string
@@ -613,18 +613,18 @@ func sessionBadges(s session.Session, dim bool, nerd bool) string {
 	if nerd {
 		// Nerd Font compact icons.
 		if s.IsSubagent {
-			parts = append(parts, badge(badgeSubStyle, "")) // nf-fa-sitemap U+F0E8
+			parts = append(parts, badge(badgeSubStyle, "\U000F0B46")) // U+F0B46
 		} else {
-			parts = append(parts, badge(badgeSubStyle, "")) // fa-user U+F007
+			parts = append(parts, badge(badgeSubStyle, "\uEE0D")) // U+EE0D
 		}
 		if s.AwaySummaryCount >= 1 {
-			parts = append(parts, badge(badgeMultiStyle, "")) // fa-calendar U+F073
+			parts = append(parts, badge(badgeMultiStyle, "\uEF38")) // U+EF38
 		}
 		if s.ApiErrorRate > 0.05 {
-			parts = append(parts, badge(badgeErrStyle, "")) // nf-fa-exclamation_triangle U+F071
+			parts = append(parts, badge(badgeErrStyle, "\uEA87")) // U+EA87
 		}
 		if s.QueueDepth > 0 {
-			parts = append(parts, badge(badgeQueueStyle, fmt.Sprintf(" %d", s.QueueDepth))) // nf-fa-tasks U+F0AE
+			parts = append(parts, badge(badgeQueueStyle, fmt.Sprintf("\U000F1571 %d", s.QueueDepth))) // U+F1571
 		}
 	} else {
 		// Plain ASCII badges.
