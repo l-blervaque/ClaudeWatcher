@@ -133,10 +133,10 @@ func tick() tea.Cmd {
 
 // optionsMaxCursor is the highest valid optCursor index in the Options tab.
 // Sons: 0=toggle, 1=sound selector → 2 items
-// Colonnes: 2=ShowCache, 3=ShowCtx, 4=ShowMsgs, 5=ShowAge, 6=ShowBadges → 5 items
-// Display: 7=NerdFonts → 1 item
-// Total indices: 0..7 → 7
-const optionsMaxCursor = 7
+// Colonnes: 2=ShowCache, 3=ShowCtx, 4=ShowMsgs, 5=ShowAge, 6=ShowBadges, 7=ShowSkill → 6 items
+// Display: 8=NerdFonts → 1 item
+// Total indices: 0..8 → 8
+const optionsMaxCursor = 8
 
 func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	switch msg := msg.(type) {
@@ -186,6 +186,8 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				case 6:
 					m.cfg.ShowBadges = !m.cfg.ShowBadges
 				case 7:
+					m.cfg.ShowSkill = !m.cfg.ShowSkill
+				case 8:
 					m.cfg.NerdFonts = !m.cfg.NerdFonts
 				}
 			case "tab":
@@ -428,11 +430,12 @@ func (m Model) renderOptions() string {
 		enabled bool
 		idx     int
 	}{
-		{"Cache", m.cfg.ShowCache, 2},
-		{"Ctx", m.cfg.ShowCtx, 3},
-		{"Msgs", m.cfg.ShowMsgs, 4},
-		{"Age", m.cfg.ShowAge, 5},
+		{"Cache",  m.cfg.ShowCache,  2},
+		{"Ctx",    m.cfg.ShowCtx,    3},
+		{"Msgs",   m.cfg.ShowMsgs,   4},
+		{"Age",    m.cfg.ShowAge,    5},
 		{"Badges", m.cfg.ShowBadges, 6},
+		{"Skill",  m.cfg.ShowSkill,  7},
 	}
 	for _, col := range colOptions {
 		chk := "[ ]"
@@ -453,7 +456,7 @@ func (m Model) renderOptions() string {
 	if m.cfg.NerdFonts {
 		nfCheck = "[x]"
 	}
-	b.WriteString(bars[7])
+	b.WriteString(bars[8])
 	b.WriteString(fmt.Sprintf(" %s Nerd Fonts\n", nfCheck))
 
 	// Visual hint line below the toggle: if the glyph renders as an icon the font works.
@@ -540,7 +543,9 @@ func (m Model) renderShortcuts() string {
 		{"[S]", "\U000F0B46", badgeSubStyle, "subagent"},
 		{"[MULTI]", "\uEF38", badgeMultiStyle, "multi-day session"},
 		{"[ERR]", "\uEA87", badgeErrStyle, "API error rate > 5%"},
-		{"[Q:N]", "\U000F1571 N", badgeQueueStyle, "N queued tasks"},
+		{"[Q:N]",    "\U000F1571 N", badgeQueueStyle, "N queued tasks"},
+		{"[CMPT]",  "",      badgeMultiStyle,  "context compacted once"},
+		{"[CMPT:N]", " N",   badgeMultiStyle,  "context compacted N times"},
 	}
 	for _, e := range entries {
 		var tag string
@@ -626,6 +631,15 @@ func sessionBadges(s session.Session, dim bool, nerd bool) string {
 		if s.QueueDepth > 0 {
 			parts = append(parts, badge(badgeQueueStyle, fmt.Sprintf("\U000F1571 %d", s.QueueDepth))) // U+F1571
 		}
+		if !s.IsSubagent && s.CompactBoundaryCount >= 1 {
+			var cmptTag string
+			if s.CompactBoundaryCount > 1 {
+				cmptTag = fmt.Sprintf(" %d", s.CompactBoundaryCount)
+			} else {
+				cmptTag = ""
+			}
+			parts = append(parts, badge(badgeMultiStyle, cmptTag))
+		}
 	} else {
 		// Plain ASCII badges.
 		if s.IsSubagent {
@@ -642,6 +656,15 @@ func sessionBadges(s session.Session, dim bool, nerd bool) string {
 		if s.QueueDepth > 0 {
 			parts = append(parts, badge(badgeQueueStyle, fmt.Sprintf("[Q:%d]", s.QueueDepth)))
 		}
+		if !s.IsSubagent && s.CompactBoundaryCount >= 1 {
+			var cmptTag string
+			if s.CompactBoundaryCount > 1 {
+				cmptTag = fmt.Sprintf("[CMPT:%d]", s.CompactBoundaryCount)
+			} else {
+				cmptTag = "[CMPT]"
+			}
+			parts = append(parts, badge(badgeMultiStyle, cmptTag))
+		}
 	}
 	return strings.Join(parts, " ")
 }
@@ -655,6 +678,7 @@ const (
 	wideColMsg   = 5
 	wideColAgo   = 8
 	wideColBadge = 12
+	wideColSkill = 16
 	// gap chars between columns: icon(1) + spaces between each col = 7 separators
 	wideColGaps = 7
 )
@@ -751,6 +775,14 @@ func (m Model) renderListNarrow() string {
 		if m.cfg.ShowAge {
 			line3parts = append(line3parts, humanizeAgo(s.LastModified))
 		}
+		if m.cfg.ShowSkill && s.ActiveSkill != "" {
+			skill := strings.TrimPrefix(s.ActiveSkill, "superpowers:")
+			if m.cfg.NerdFonts {
+				line3parts = append(line3parts, " "+truncate(skill, 12))
+			} else {
+				line3parts = append(line3parts, "skill:"+truncate(skill, 12))
+			}
+		}
 		line3 := "  " + strings.Join(line3parts, " · ")
 
 		// Subagents get a 4-space indent prefix on every line.
@@ -806,6 +838,9 @@ func (m Model) renderListWide() string {
 	if m.cfg.ShowBadges {
 		optColsW += wideColBadge + 2
 	}
+	if m.cfg.ShowSkill {
+		optColsW += wideColSkill + 1
+	}
 
 	// Fixed: bar(1) + icon(1) + space(1) + project + space(1) = 4
 	titleW := m.width - 4 - wideColProj - optColsW
@@ -832,6 +867,9 @@ func (m Model) renderListWide() string {
 	}
 	if m.cfg.ShowBadges {
 		hdr.WriteString(fmt.Sprintf("  %-*s", wideColBadge, "BADGES"))
+	}
+	if m.cfg.ShowSkill {
+		hdr.WriteString(fmt.Sprintf(" %-*s", wideColSkill, "SKILL"))
 	}
 	b.WriteString(headerStyle.Render(hdr.String()))
 	b.WriteString("\n")
@@ -909,6 +947,21 @@ func (m Model) renderListWide() string {
 			badges := sessionBadges(s, dim, m.cfg.NerdFonts)
 			row.WriteString("  ")
 			row.WriteString(badges)
+		}
+		if m.cfg.ShowSkill {
+			skillName := strings.TrimPrefix(s.ActiveSkill, "superpowers:")
+			var skillStr string
+			if m.cfg.NerdFonts && skillName != "" {
+				skillStr = fmt.Sprintf(" %s", skillName)
+			} else {
+				skillStr = skillName
+			}
+			skillStr = fmt.Sprintf("%-*s", wideColSkill, truncate(skillStr, wideColSkill))
+			if dim {
+				skillStr = dimStyle.Render(skillStr)
+			}
+			row.WriteString(" ")
+			row.WriteString(skillStr)
 		}
 
 		bar := unselectedBar

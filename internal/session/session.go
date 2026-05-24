@@ -86,10 +86,12 @@ type Session struct {
 	ParentID        string // non-empty for subagent sessions: UUID of the parent main session
 	CacheEfficiency float64 // cache_read / (input + cache_read + cache_creation), -1 if not calculable
 	AwaySummaryCount int   // number of "system" lines with subtype "away_summary"
-	ApiErrorCount   int
-	TurnCount       int
-	ApiErrorRate    float64 // ApiErrorCount / TurnCount, 0 if TurnCount == 0
-	QueueDepth      int    // enqueue - dequeue (min 0), from queue-operation lines
+	ApiErrorCount        int
+	TurnCount            int
+	ApiErrorRate         float64 // ApiErrorCount / TurnCount, 0 if TurnCount == 0
+	QueueDepth           int     // enqueue - dequeue (min 0), from queue-operation lines
+	CompactBoundaryCount int     // F-001
+	ActiveSkill          string  // F-002
 }
 
 // Default context window when the model is unknown.
@@ -150,12 +152,14 @@ func ProjectNameFromDir(name string) string {
 
 // jsonlLine is a minimal struct to extract everything we care about.
 type jsonlLine struct {
-	Type    string `json:"type"`
-	Subtype string `json:"subtype"`
-	Cwd     string `json:"cwd"`
-	CustomTitle string `json:"customTitle"`
-	AiTitle     string `json:"aiTitle"`
-	Action  string `json:"action"` // for queue-operation lines: "enqueue" | "dequeue"
+	Type            string `json:"type"`
+	Subtype         string `json:"subtype"`
+	Cwd             string `json:"cwd"`
+	CustomTitle     string `json:"customTitle"`
+	AiTitle         string `json:"aiTitle"`
+	Action          string `json:"action"` // for queue-operation lines: "enqueue" | "dequeue"
+	AttributionSkill string `json:"attributionSkill"` // F-002: skill active (type=assistant)
+	DurationMs      int    `json:"durationMs"`        // F-001: durée ms (type=system, subtype=compact_boundary)
 	Message struct {
 		Role    string          `json:"role"`
 		Model   string          `json:"model"`
@@ -183,10 +187,12 @@ type JSONLStats struct {
 	IsSubagent       bool    // true if no main-session marker lines found in first 30 lines
 	CacheEfficiency  float64 // cache_read / (input + cache_read + cache_creation), -1 if not calculable
 	AwaySummaryCount int     // number of "system" lines with subtype "away_summary"
-	ApiErrorCount    int
-	TurnCount        int
-	ApiErrorRate     float64 // ApiErrorCount / TurnCount, 0 if TurnCount == 0
-	QueueDepth       int    // enqueue - dequeue (min 0)
+	ApiErrorCount        int
+	TurnCount            int
+	ApiErrorRate         float64 // ApiErrorCount / TurnCount, 0 if TurnCount == 0
+	QueueDepth           int     // enqueue - dequeue (min 0)
+	CompactBoundaryCount int     // F-001: nombre de compact_boundary valides (durationMs >= 1000)
+	ActiveSkill          string  // F-002: dernière attributionSkill sur type=assistant
 }
 
 // mainSessionTypes is the set of line types that only appear in main (non-subagent) sessions.
@@ -249,6 +255,13 @@ func ScanJSONL(path string) (JSONLStats, error) {
 			stats.AwaySummaryCount++
 		}
 
+		// F-001: compact_boundary counter (durationMs < 1000 = session brisée, ignorée).
+		if l.Type == "system" && l.Subtype == "compact_boundary" {
+			if l.DurationMs >= 1000 {
+				stats.CompactBoundaryCount++
+			}
+		}
+
 		// F-006: api_error counter.
 		if l.Type == "system" && l.Subtype == "api_error" {
 			stats.ApiErrorCount++
@@ -290,6 +303,10 @@ func ScanJSONL(path string) (JSONLStats, error) {
 				}
 				if text := extractAssistantText(l.Message.Content); text != "" {
 					stats.LastAssistant = text
+				}
+				// F-002: last active skill.
+				if l.AttributionSkill != "" {
+					stats.ActiveSkill = l.AttributionSkill
 				}
 				// Cache efficiency accumulation — skip synthetic messages.
 				if l.Message.Model != "<synthetic>" {

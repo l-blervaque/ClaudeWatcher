@@ -138,11 +138,13 @@ func Scan(opts ScanOptions) ([]session.Session, error) {
 						IsSubagent:       stats.IsSubagent,
 						ParentID:         f.Name(), // directory name = parent session UUID
 						CacheEfficiency:  stats.CacheEfficiency,
-						AwaySummaryCount: stats.AwaySummaryCount,
-						ApiErrorCount:    stats.ApiErrorCount,
-						TurnCount:        stats.TurnCount,
-						ApiErrorRate:     stats.ApiErrorRate,
-						QueueDepth:       stats.QueueDepth,
+						AwaySummaryCount:     stats.AwaySummaryCount,
+						ApiErrorCount:        stats.ApiErrorCount,
+						TurnCount:            stats.TurnCount,
+						ApiErrorRate:         stats.ApiErrorRate,
+						QueueDepth:           stats.QueueDepth,
+						CompactBoundaryCount: stats.CompactBoundaryCount,
+						ActiveSkill:          stats.ActiveSkill,
 					})
 				}
 				continue
@@ -187,11 +189,13 @@ func Scan(opts ScanOptions) ([]session.Session, error) {
 				LastAssistant:    stats.LastAssistant,
 				IsSubagent:       stats.IsSubagent,
 				CacheEfficiency:  stats.CacheEfficiency,
-				AwaySummaryCount: stats.AwaySummaryCount,
-				ApiErrorCount:    stats.ApiErrorCount,
-				TurnCount:        stats.TurnCount,
-				ApiErrorRate:     stats.ApiErrorRate,
-				QueueDepth:       stats.QueueDepth,
+				AwaySummaryCount:     stats.AwaySummaryCount,
+				ApiErrorCount:        stats.ApiErrorCount,
+				TurnCount:            stats.TurnCount,
+				ApiErrorRate:         stats.ApiErrorRate,
+				QueueDepth:           stats.QueueDepth,
+				CompactBoundaryCount: stats.CompactBoundaryCount,
+				ActiveSkill:          stats.ActiveSkill,
 			})
 		}
 	}

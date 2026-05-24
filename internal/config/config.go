@@ -19,6 +19,9 @@ type Config struct {
 	ShowAge    bool `json:"show_age"`
 	ShowBadges bool `json:"show_badges"`
 
+	// ShowSkill toggles the SKILL column (last active skill). Default true.
+	ShowSkill bool `json:"show_skill"`
+
 	// NerdFonts enables Nerd Font icons instead of plain Unicode/ASCII symbols.
 	// Opt-in: false by default so plain terminals are not affected.
 	NerdFonts bool `json:"nerd_fonts"`
@@ -32,6 +35,7 @@ var defaults = Config{
 	ShowMsgs:     true,
 	ShowAge:      true,
 	ShowBadges:   true,
+	ShowSkill:    true,
 }
 
 func configPath() (string, error) {
