@@ -49,6 +49,14 @@ var (
 	cursorBar      = cursorBarStyle.Render("▌")
 	unselectedBar  = " "
 
+	// Hover marker: a pale version of the selection bar, shown on the row the
+	// mouse is over to signal it's clickable.
+	hoverBarStyle = lipgloss.NewStyle().Foreground(lipgloss.Color("#4A3D6B"))
+	hoverBar      = hoverBarStyle.Render("▌")
+
+	// Tab label shown under the mouse (brighter than the dim resting state).
+	tabHoverStyle = lipgloss.NewStyle().Foreground(lipgloss.Color("#999"))
+
 	dimStyle = lipgloss.NewStyle().Foreground(lipgloss.Color("#666"))
 
 	statusStyles = map[session.Status]lipgloss.Style{
@@ -98,6 +106,8 @@ type Model struct {
 	optCursor    int
 	cfg          config.Config
 	prevStatus   map[string]session.Status
+	mouseX       int // last known mouse column (-1 = off-screen)
+	mouseY       int // last known mouse row (-1 = off-screen)
 }
 
 func NewModel() Model {
@@ -105,6 +115,8 @@ func NewModel() Model {
 	return Model{
 		cfg:        cfg,
 		prevStatus: make(map[string]session.Status),
+		mouseX:     -1,
+		mouseY:     -1,
 	}
 }
 
@@ -241,6 +253,8 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.detail = false
 		}
 	case tea.MouseMsg:
+		// Track the pointer so the renderer can highlight the hovered target.
+		m.mouseX, m.mouseY = msg.X, msg.Y
 		if msg.Action != tea.MouseActionPress {
 			return m, nil
 		}
@@ -378,13 +392,23 @@ func (m Model) View() string {
 
 // renderTabBar returns the tab navigation bar string.
 func (m Model) renderTabBar() string {
+	// The tab bar is always on row 0; light up the label under the pointer.
+	hovered := -1
+	if m.mouseY == 0 {
+		if t, ok := tabAtX(m.mouseX); ok {
+			hovered = t
+		}
+	}
 	var parts []string
 	for i, t := range tabBarLabels {
-		if i == m.activeTab {
+		switch {
+		case i == m.activeTab:
 			parts = append(parts, lipgloss.NewStyle().
 				Bold(true).Foreground(lipgloss.Color("#7D56F4")).
 				Underline(true).Render(t))
-		} else {
+		case i == hovered:
+			parts = append(parts, tabHoverStyle.Render(t))
+		default:
 			parts = append(parts, dimStyle.Render(t))
 		}
 	}
@@ -437,6 +461,15 @@ func (m Model) sessionAtY(y int) (int, bool) {
 		return 0, false
 	}
 	return idx, true
+}
+
+// hoveredSession returns the session index currently under the mouse pointer,
+// or -1 when the pointer isn't over a row.
+func (m Model) hoveredSession() int {
+	if idx, ok := m.sessionAtY(m.mouseY); ok {
+		return idx
+	}
+	return -1
 }
 
 // renderFooter returns a single dim line of contextual shortcuts.
@@ -779,6 +812,7 @@ func clampOffset(cursor, offset, visibleRows int) int {
 func (m Model) renderListNarrow() string {
 	var b strings.Builder
 
+	hovered := m.hoveredSession()
 	visible := m.visibleRows()
 	end := m.offset + visible
 	if end > len(m.sessions) {
@@ -841,8 +875,11 @@ func (m Model) renderListNarrow() string {
 		}
 
 		bar := unselectedBar
-		if i == m.cursor {
+		switch {
+		case i == m.cursor:
 			bar = cursorBar
+		case i == hovered:
+			bar = hoverBar
 		}
 		b.WriteString(bar)
 		b.WriteString(indent)
@@ -869,6 +906,8 @@ func (m Model) renderListNarrow() string {
 // columns: status(1) space project(wideColProj) title(flex) [ctx] [cache] [msgs] [ago] [badges]
 func (m Model) renderListWide() string {
 	var b strings.Builder
+
+	hovered := m.hoveredSession()
 
 	// Compute titleW by subtracting only the visible optional columns.
 	optColsW := 0
@@ -993,8 +1032,11 @@ func (m Model) renderListWide() string {
 		}
 
 		bar := unselectedBar
-		if i == m.cursor {
+		switch {
+		case i == m.cursor:
 			bar = cursorBar
+		case i == hovered:
+			bar = hoverBar
 		}
 		b.WriteString(bar)
 		b.WriteString(row.String())
