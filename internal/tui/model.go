@@ -472,6 +472,23 @@ func (m Model) hoveredSession() int {
 	return -1
 }
 
+// withFooter pins the contextual footer to the bottom of the screen, padding
+// the body with blank lines so the footer always sits on the last row instead
+// of floating right below the content.
+func (m Model) withFooter(body string) string {
+	body = strings.TrimRight(body, "\n")
+	footer := m.renderFooter()
+	bodyRows := strings.Count(body, "\n") + 1
+	// The footer is the final segment (no trailing newline), so total rendered
+	// lines == bodyRows + pad. Fill exactly to the screen height so the footer
+	// lands on the last row with no blank line below it.
+	pad := m.height - bodyRows
+	if pad < 1 {
+		pad = 1
+	}
+	return body + strings.Repeat("\n", pad) + footer
+}
+
 // renderFooter returns a single dim line of contextual shortcuts.
 func (m Model) renderFooter() string {
 	var content string
@@ -576,9 +593,7 @@ func (m Model) renderOptions() string {
 		b.WriteString(fmt.Sprintf("    → %s if you see an icon, Nerd Fonts work\n", glyph))
 	}
 
-	b.WriteString("\n")
-	b.WriteString(m.renderFooter())
-	return b.String()
+	return m.withFooter(b.String())
 }
 
 // renderShortcuts shows all keyboard shortcuts.
@@ -666,9 +681,7 @@ func (m Model) renderShortcuts() string {
 		b.WriteString(fmt.Sprintf("  %-14s %s\n", tag, dimStyle.Render(e.label)))
 	}
 
-	b.WriteString("\n")
-	b.WriteString(m.renderFooter())
-	return b.String()
+	return m.withFooter(b.String())
 }
 
 func (m Model) renderList() string {
@@ -708,9 +721,7 @@ func (m Model) renderList() string {
 		b.WriteString(m.renderListWide())
 	}
 
-	b.WriteString("\n")
-	b.WriteString(m.renderFooter())
-	return b.String()
+	return m.withFooter(b.String())
 }
 
 // sessionBadges returns the inline badges string for a session (e.g. "[S] [MULTI]").
@@ -775,19 +786,20 @@ const (
 
 // visibleRows returns how many sessions fit on screen given the current layout.
 // Narrow layout uses 3 lines per session; wide uses 1 line per session.
-// ~8 lines are reserved for tab bar, header, and footer box.
+// Chrome above the list: tab bar + header + blank line (3 rows), plus the wide
+// layout's column-header row (1). The single-line footer takes the last row.
 func (m Model) visibleRows() int {
-	reserved := 8
-	available := m.height - reserved
-	if available < 1 {
-		return 1
-	}
 	if m.width < 80 {
+		available := m.height - 4 // 3 chrome + 1 footer
 		rows := available / 3
 		if rows < 1 {
 			return 1
 		}
 		return rows
+	}
+	available := m.height - 5 // 4 chrome + 1 footer
+	if available < 1 {
+		return 1
 	}
 	return available
 }
@@ -1131,9 +1143,7 @@ func (m Model) renderDetail() string {
 
 	b.WriteString("\n")
 	b.WriteString(dimStyle.Render(fmt.Sprintf("jsonl: %s\n", s.JSONLPath)))
-	b.WriteString("\n")
-	b.WriteString(m.renderFooter())
-	return b.String()
+	return m.withFooter(b.String())
 }
 
 // ---- helpers ----
