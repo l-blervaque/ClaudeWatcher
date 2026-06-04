@@ -69,12 +69,6 @@ var (
 	badgeErrStyle   = lipgloss.NewStyle().Foreground(lipgloss.Color("#F44336"))
 	badgeQueueStyle = lipgloss.NewStyle().Foreground(lipgloss.Color("#2196F3"))
 
-	// Footer box style.
-	footerBoxStyle = lipgloss.NewStyle().
-			Border(lipgloss.RoundedBorder()).
-			BorderForeground(lipgloss.Color("#444")).
-			Padding(0, 1)
-
 	// Options section header style.
 	sectionHeaderStyle = lipgloss.NewStyle().
 				Bold(true).
@@ -246,6 +240,50 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		case "esc":
 			m.detail = false
 		}
+	case tea.MouseMsg:
+		if msg.Action != tea.MouseActionPress {
+			return m, nil
+		}
+		// Wheel scroll over the Sessions list moves the cursor.
+		if !m.detail && m.activeTab == tabSessions {
+			switch msg.Button {
+			case tea.MouseButtonWheelUp:
+				if m.cursor > 0 {
+					m.cursor--
+					m.offset = clampOffset(m.cursor, m.offset, m.visibleRows())
+				}
+				return m, nil
+			case tea.MouseButtonWheelDown:
+				if m.cursor < len(m.sessions)-1 {
+					m.cursor++
+					m.offset = clampOffset(m.cursor, m.offset, m.visibleRows())
+				}
+				return m, nil
+			}
+		}
+		if msg.Button != tea.MouseButtonLeft {
+			return m, nil
+		}
+		// Tab bar sits on row 0 of every non-detail view.
+		if !m.detail && msg.Y == 0 {
+			if tab, ok := tabAtX(msg.X); ok {
+				m.activeTab = tab
+				config.Save(m.cfg) //nolint:errcheck
+			}
+			return m, nil
+		}
+		// A click on a session row selects it; clicking the selected row opens detail.
+		if !m.detail && m.activeTab == tabSessions {
+			if idx, ok := m.sessionAtY(msg.Y); ok {
+				if idx == m.cursor {
+					m.detail = true
+				} else {
+					m.cursor = idx
+					m.offset = clampOffset(m.cursor, m.offset, m.visibleRows())
+				}
+			}
+			return m, nil
+		}
 	case tickMsg:
 		return m, tea.Batch(loadSessions(m.includeEnded), tick())
 	case sessionsMsg:
@@ -340,9 +378,8 @@ func (m Model) View() string {
 
 // renderTabBar returns the tab navigation bar string.
 func (m Model) renderTabBar() string {
-	tabs := []string{"Sessions", "Options", "Shortcuts"}
 	var parts []string
-	for i, t := range tabs {
+	for i, t := range tabBarLabels {
 		if i == m.activeTab {
 			parts = append(parts, lipgloss.NewStyle().
 				Bold(true).Foreground(lipgloss.Color("#7D56F4")).
@@ -354,7 +391,55 @@ func (m Model) renderTabBar() string {
 	return strings.Join(parts, dimStyle.Render("  │  "))
 }
 
-// renderFooter returns a box-bordered footer with contextual shortcuts.
+// tabBarLabels is the single source of truth for tab labels and their order;
+// shared by renderTabBar (display) and tabAtX (click hit-testing).
+var tabBarLabels = []string{"Sessions", "Options", "Shortcuts"}
+
+// tabBarSepWidth is the visible width of the "  │  " separator between tabs.
+const tabBarSepWidth = 5
+
+// tabAtX maps an X column on the tab bar (row 0) to a tab index.
+func tabAtX(x int) (int, bool) {
+	col := 0
+	for i, l := range tabBarLabels {
+		if x >= col && x < col+len(l) {
+			return i, true
+		}
+		col += len(l) + tabBarSepWidth
+	}
+	return 0, false
+}
+
+// sessionAtY maps a screen row Y to a session index in the current list view.
+// Layout (see renderList): row 0 tab bar, row 1 header, row 2 blank. Wide mode
+// adds a column header on row 3 and data rows from row 4; narrow mode packs 3
+// lines per session starting at row 3.
+func (m Model) sessionAtY(y int) (int, bool) {
+	visible := m.visibleRows()
+	end := m.offset + visible
+	if end > len(m.sessions) {
+		end = len(m.sessions)
+	}
+	var rel int
+	if m.width < 80 {
+		if y < 3 {
+			return 0, false
+		}
+		rel = (y - 3) / 3
+	} else {
+		if y < 4 {
+			return 0, false
+		}
+		rel = y - 4
+	}
+	idx := m.offset + rel
+	if idx < m.offset || idx >= end {
+		return 0, false
+	}
+	return idx, true
+}
+
+// renderFooter returns a single dim line of contextual shortcuts.
 func (m Model) renderFooter() string {
 	var content string
 	switch {
@@ -367,11 +452,7 @@ func (m Model) renderFooter() string {
 	default: // tabSessions
 		content = "j/k nav · enter detail · o options · a all/open · r refresh · ctrl+q quit"
 	}
-	w := m.width - 2
-	if w < 10 {
-		w = 10
-	}
-	return footerBoxStyle.Width(w).Render(dimStyle.Render(content))
+	return dimStyle.Render(content)
 }
 
 func (m Model) renderOptions() string {
