@@ -139,10 +139,10 @@ func tick() tea.Cmd {
 
 // optionsMaxCursor is the highest valid optCursor index in the Options tab.
 // Sons: 0=toggle, 1=sound selector → 2 items
-// Colonnes: 2=ShowCache, 3=ShowCtx, 4=ShowMsgs, 5=ShowAge, 6=ShowBadges → 5 items
-// Display: 7=NerdFonts → 1 item
-// Total indices: 0..7 → 7
-const optionsMaxCursor = 7
+// Colonnes: 2=ShowCache, 3=ShowCtx, 4=ShowMsgs, 5=ShowAge, 6=ShowModel, 7=ShowBadges → 6 items
+// Display: 8=NerdFonts → 1 item
+// Total indices: 0..8 → 8
+const optionsMaxCursor = 8
 
 func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	switch msg := msg.(type) {
@@ -190,8 +190,10 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				case 5:
 					m.cfg.ShowAge = !m.cfg.ShowAge
 				case 6:
-					m.cfg.ShowBadges = !m.cfg.ShowBadges
+					m.cfg.ShowModel = !m.cfg.ShowModel
 				case 7:
+					m.cfg.ShowBadges = !m.cfg.ShowBadges
+				case 8:
 					m.cfg.NerdFonts = !m.cfg.NerdFonts
 				}
 			case "tab":
@@ -563,7 +565,8 @@ func (m Model) renderOptions() string {
 		{"Ctx", m.cfg.ShowCtx, 3},
 		{"Msgs", m.cfg.ShowMsgs, 4},
 		{"Age", m.cfg.ShowAge, 5},
-		{"Badges", m.cfg.ShowBadges, 6},
+		{"Model", m.cfg.ShowModel, 6},
+		{"Badges", m.cfg.ShowBadges, 7},
 	}
 	for _, col := range colOptions {
 		chk := "[ ]"
@@ -584,7 +587,7 @@ func (m Model) renderOptions() string {
 	if m.cfg.NerdFonts {
 		nfCheck = "[x]"
 	}
-	b.WriteString(bars[7])
+	b.WriteString(bars[8])
 	b.WriteString(fmt.Sprintf(" %s Nerd Fonts\n", nfCheck))
 
 	// Visual hint line below the toggle: if the glyph renders as an icon the font works.
@@ -779,6 +782,7 @@ const (
 	wideColCache = 7
 	wideColMsg   = 5
 	wideColAgo   = 8
+	wideColModel = 10
 	wideColBadge = 12
 	// gap chars between columns: icon(1) + spaces between each col = 7 separators
 	wideColGaps = 7
@@ -878,6 +882,11 @@ func (m Model) renderListNarrow() string {
 		if m.cfg.ShowAge {
 			line3parts = append(line3parts, humanizeAgo(s.LastModified))
 		}
+		if m.cfg.ShowModel {
+			if label := session.ModelLabel(s.Model); label != "" {
+				line3parts = append(line3parts, label)
+			}
+		}
 		line3 := "  " + strings.Join(line3parts, " · ")
 
 		// Subagents get a 4-space indent prefix on every line.
@@ -935,6 +944,9 @@ func (m Model) renderListWide() string {
 	if m.cfg.ShowAge {
 		optColsW += wideColAgo + 1
 	}
+	if m.cfg.ShowModel {
+		optColsW += wideColModel + 1
+	}
 	if m.cfg.ShowBadges {
 		optColsW += wideColBadge + 2
 	}
@@ -961,6 +973,9 @@ func (m Model) renderListWide() string {
 	}
 	if m.cfg.ShowAge {
 		hdr.WriteString(fmt.Sprintf(" %*s", wideColAgo, "AGE"))
+	}
+	if m.cfg.ShowModel {
+		hdr.WriteString(fmt.Sprintf(" %-*s", wideColModel, "MODEL"))
 	}
 	if m.cfg.ShowBadges {
 		hdr.WriteString(fmt.Sprintf("  %-*s", wideColBadge, "BADGES"))
@@ -1036,6 +1051,14 @@ func (m Model) renderListWide() string {
 			}
 			row.WriteString(" ")
 			row.WriteString(ageStr)
+		}
+		if m.cfg.ShowModel {
+			modelStr := fmt.Sprintf("%-*s", wideColModel, truncate(session.ModelLabel(s.Model), wideColModel))
+			if dim {
+				modelStr = dimStyle.Render(modelStr)
+			}
+			row.WriteString(" ")
+			row.WriteString(modelStr)
 		}
 		if m.cfg.ShowBadges {
 			badges := sessionBadges(s, dim, m.cfg.NerdFonts)
@@ -1119,6 +1142,9 @@ func (m Model) renderDetail() string {
 	b.WriteString("\n")
 	b.WriteString(headerStyle.Render("Stats"))
 	b.WriteString("\n")
+	if label := session.ModelLabel(s.Model); label != "" {
+		b.WriteString(fmt.Sprintf("  Model:    %s\n", label))
+	}
 	b.WriteString(fmt.Sprintf("  Context:  %s (%d / %d tokens)\n",
 		contextPct(s.ContextTokens, s.Model), s.ContextTokens, session.ContextWindowFor(s.Model)))
 	b.WriteString(fmt.Sprintf("  Cache:    %s\n", cachePct(s.CacheEfficiency, false)))

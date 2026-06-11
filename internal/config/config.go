@@ -17,6 +17,7 @@ type Config struct {
 	ShowCtx    bool `json:"show_ctx"`
 	ShowMsgs   bool `json:"show_msgs"`
 	ShowAge    bool `json:"show_age"`
+	ShowModel  bool `json:"show_model"`
 	ShowBadges bool `json:"show_badges"`
 
 	// NerdFonts enables Nerd Font icons instead of plain Unicode/ASCII symbols.
@@ -31,6 +32,7 @@ var defaults = Config{
 	ShowCtx:      true,
 	ShowMsgs:     true,
 	ShowAge:      true,
+	ShowModel:    true,
 	ShowBadges:   true,
 }
 

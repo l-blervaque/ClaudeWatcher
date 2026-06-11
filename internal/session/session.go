@@ -116,6 +116,33 @@ func ContextWindowFor(model string) int {
 	return ContextWindow
 }
 
+// ModelLabel turns a model id into a short human label, e.g.
+// "claude-opus-4-7" -> "Opus 4.7", "claude-haiku-4-5-20251001" -> "Haiku 4.5",
+// "claude-fable-5" -> "Fable 5", "opus" -> "Opus". Returns "" for empty ids
+// and the synthetic-message sentinel "<synthetic>".
+func ModelLabel(id string) string {
+	if id == "" || id == "<synthetic>" {
+		return ""
+	}
+	parts := strings.Split(strings.TrimPrefix(id, "claude-"), "-")
+	if len(parts) == 0 || parts[0] == "" {
+		return id
+	}
+	family := strings.ToUpper(parts[0][:1]) + parts[0][1:]
+	var vers []string
+	for _, p := range parts[1:] {
+		// Stop at the first non-numeric or date-like (>=6 digit) segment.
+		if _, err := strconv.Atoi(p); err != nil || len(p) >= 6 {
+			break
+		}
+		vers = append(vers, p)
+	}
+	if len(vers) == 0 {
+		return family
+	}
+	return family + " " + strings.Join(vers, ".")
+}
+
 // parseClaudeVersion extracts family + version from ids like
 // "claude-opus-4-7" or "claude-sonnet-4-6-20251001".
 func parseClaudeVersion(id string) (family string, major, minor int, ok bool) {
@@ -285,7 +312,9 @@ func ScanJSONL(path string) (JSONLStats, error) {
 				if total := u.InputTokens + u.CacheCreationInputTokens + u.CacheReadInputTokens; total > 0 {
 					stats.ContextTokens = total
 				}
-				if l.Message.Model != "" {
+				// Keep the last real model; never let the synthetic sentinel
+				// overwrite it (synthetic messages have model "<synthetic>").
+				if l.Message.Model != "" && l.Message.Model != "<synthetic>" {
 					stats.Model = l.Message.Model
 				}
 				if text := extractAssistantText(l.Message.Content); text != "" {

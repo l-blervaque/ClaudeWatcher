@@ -53,6 +53,29 @@ func TestContextWindowFor(t *testing.T) {
 	}
 }
 
+func TestModelLabel(t *testing.T) {
+	cases := []struct {
+		id   string
+		want string
+	}{
+		{"claude-opus-4-7", "Opus 4.7"},
+		{"claude-opus-4-8", "Opus 4.8"},
+		{"claude-sonnet-4-6", "Sonnet 4.6"},
+		{"claude-haiku-4-5-20251001", "Haiku 4.5"}, // date suffix dropped
+		{"claude-fable-5", "Fable 5"},
+		{"opus", "Opus"},   // short alias, no version
+		{"sonnet", "Sonnet"},
+		{"haiku", "Haiku"},
+		{"<synthetic>", ""},
+		{"", ""},
+	}
+	for _, c := range cases {
+		if got := ModelLabel(c.id); got != c.want {
+			t.Errorf("ModelLabel(%q) = %q, want %q", c.id, got, c.want)
+		}
+	}
+}
+
 func TestDetermineStatus(t *testing.T) {
 	now := time.Now()
 	cases := []struct {
