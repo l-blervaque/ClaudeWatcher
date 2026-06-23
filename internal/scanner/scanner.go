@@ -4,6 +4,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"regexp"
 	"sort"
 	"strings"
 	"time"
@@ -20,31 +21,116 @@ func projectsRoot() (string, error) {
 	return filepath.Join(home, ".claude", "projects"), nil
 }
 
-// runningClaudeCwds returns the cwd of each live `claude` CLI process,
-// as a slice (one entry per process — duplicates kept so callers can
-// count how many sessions are open per project).
-func runningClaudeCwds() []string {
-	// `pgrep -x claude` matches the exact executable name, avoiding
-	// the Claude.app desktop helper processes.
+// claudeProc describes a live `claude` process that represents a real session.
+type claudeProc struct {
+	// cwd is the process working directory (used for the recency fallback
+	// when the exact session can't be recovered).
+	cwd string
+	// sessionID is the full session UUID recovered from a `--resume <uuid>`
+	// argument. This is the strongest identity signal — exact and globally
+	// unique — and is present for every resumed terminal / cmux / tmux session.
+	// Empty for a freshly started session (no --resume on its command line).
+	sessionID string
+	// sessionPrefix is the leading hex of the session UUID, recovered from a
+	// desktop-app PTY-host socket path (…/pty/<prefix>.sock). Used as a
+	// secondary signal when no --resume id is present (desktop app). Empty when
+	// the process carries no recoverable identity (plain terminal, VS Code).
+	sessionPrefix string
+}
+
+// sockRE pulls the session-id prefix out of a PTY-host socket arg such as
+// `/tmp/cc-daemon-501/e0d9d869/pty/1fe22414.sock`.
+var sockRE = regexp.MustCompile(`/pty/([0-9a-fA-F]+)\.sock`)
+
+// uuidRE matches a canonical session UUID (the value passed to `--resume`).
+var uuidRE = regexp.MustCompile(`^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$`)
+
+// sessionIDFromCmdline recovers the full session UUID from a `claude` command
+// line that resumes a session, i.e. `--resume <uuid>` or `--resume=<uuid>`.
+// Returns "" when no resume id is present (a freshly started session). Pure
+// function over the command line so it is unit-testable without spawning procs.
+func sessionIDFromCmdline(cmdline string) string {
+	fields := strings.Fields(cmdline)
+	for i, f := range fields {
+		if v, ok := strings.CutPrefix(f, "--resume="); ok {
+			if uuidRE.MatchString(v) {
+				return v
+			}
+			continue
+		}
+		if f == "--resume" && i+1 < len(fields) && uuidRE.MatchString(fields[i+1]) {
+			return fields[i+1]
+		}
+	}
+	return ""
+}
+
+// runningClaudeProcs returns the live `claude` processes that represent real
+// sessions. `pgrep -x claude` matches the exact executable name, but that name
+// is shared by the background daemon and headless `claude -p` runs, which are
+// not sessions and would inflate the per-cwd count — those are dropped here.
+// For exact attribution we recover the session id two ways: from a
+// `--resume <uuid>` argument (the common case — terminal / cmux / tmux) and,
+// failing that, from a desktop-app PTY-host socket path (…/pty/<prefix>.sock).
+func runningClaudeProcs() []claudeProc {
 	out, err := exec.Command("pgrep", "-x", "claude").Output()
 	if err != nil {
 		return nil
 	}
 	pids := strings.Fields(string(out))
 
-	var cwds []string
+	var procs []claudeProc
 	for _, pid := range pids {
-		lo, err := exec.Command("lsof", "-a", "-p", pid, "-d", "cwd", "-Fn").Output()
+		cmdOut, err := exec.Command("ps", "-o", "command=", "-p", pid).Output()
 		if err != nil {
 			continue
 		}
-		for _, line := range strings.Split(string(lo), "\n") {
-			if strings.HasPrefix(line, "n/") {
-				cwds = append(cwds, strings.TrimPrefix(line, "n"))
+		cmdline := strings.TrimSpace(string(cmdOut))
+		if !isSessionProc(cmdline) {
+			continue
+		}
+		var cwd string
+		if lo, err := exec.Command("lsof", "-a", "-p", pid, "-d", "cwd", "-Fn").Output(); err == nil {
+			for _, line := range strings.Split(string(lo), "\n") {
+				if strings.HasPrefix(line, "n/") {
+					cwd = strings.TrimPrefix(line, "n")
+					break
+				}
 			}
 		}
+		var prefix string
+		if m := sockRE.FindStringSubmatch(cmdline); m != nil {
+			prefix = m[1]
+		}
+		procs = append(procs, claudeProc{
+			cwd:           cwd,
+			sessionID:     sessionIDFromCmdline(cmdline),
+			sessionPrefix: prefix,
+		})
 	}
-	return cwds
+	return procs
+}
+
+// isSessionProc reports whether a `claude` command line represents a real
+// session. Only the genuine non-sessions are rejected: the background daemon
+// and headless `claude -p` / `--print` runs. Desktop PTY-host helpers, the
+// VS Code extension, and plain terminal sessions all pass.
+func isSessionProc(cmdline string) bool {
+	fields := strings.Fields(cmdline)
+	// The daemon runs as `claude daemon …`, so "daemon" is the first argument
+	// after the executable. Match it positionally rather than as a substring,
+	// so a session whose prompt or path merely contains "daemon" is not dropped.
+	if len(fields) >= 2 && fields[1] == "daemon" {
+		return false
+	}
+	// Headless print mode. Match whole arguments so a path containing "-p"
+	// doesn't trip the check.
+	for _, field := range fields {
+		if field == "-p" || field == "--print" {
+			return false
+		}
+	}
+	return true
 }
 
 // ScanOptions controls how Scan filters sessions.
@@ -70,10 +156,7 @@ func Scan(opts ScanOptions) ([]session.Session, error) {
 		return nil, err
 	}
 
-	procCount := map[string]int{}
-	for _, cwd := range runningClaudeCwds() {
-		procCount[cwd]++
-	}
+	procs := runningClaudeProcs()
 	now := time.Now()
 
 	var all []session.Session
@@ -196,31 +279,76 @@ func Scan(opts ScanOptions) ([]session.Session, error) {
 		}
 	}
 
-	// Group by project, mark the top-N most-recent MAIN session jsonl files as
-	// having a process, where N = number of running claude processes in that cwd.
-	// Subagent sessions are excluded from this competition: they inherit
-	// HasProcess from their parent main session in the second pass below.
+	// Attribute live processes to MAIN sessions. Subagents are excluded from
+	// this competition: they inherit HasProcess from their parent main session
+	// in the second pass below.
+	//
+	// Two-stage attribution:
+	//  1. Exact match — when a process names its own session, mark exactly that
+	//     session so an unrelated transcript in the same folder (e.g. one just
+	//     touched by `/exit`) can't steal it. The identity comes from either a
+	//     `--resume <uuid>` argument (full id, matched globally) or, failing
+	//     that, a desktop PTY-host socket prefix (matched within the cwd to
+	//     bound the tiny prefix-collision risk).
+	//  2. Recency fallback — processes with no recoverable session id (a
+	//     freshly started terminal session) are counted per cwd; the top-N most
+	//     recently modified main sessions in that cwd that weren't already
+	//     claimed in stage 1 are marked open.
 	byPath := map[string][]int{}
+	mainByID := map[string]int{} // full session ID -> index in all (main sessions only)
 	for i, s := range all {
 		if s.ParentID != "" {
 			continue // subagents handled separately
 		}
 		byPath[s.ProjectPath] = append(byPath[s.ProjectPath], i)
+		mainByID[s.ID] = i
 	}
-	// Build a set of main session IDs that have a process, for the subagent pass.
-	mainHasProcess := map[string]bool{}
+
+	// Stage 1: exact session-id attribution.
+	mainHasProcess := map[string]bool{} // session ID -> has process (for subagent pass)
+	fallbackCount := map[string]int{}   // cwd -> count of id-less processes
+	for _, p := range procs {
+		switch {
+		case p.sessionID != "":
+			// Strongest signal: a full UUID is globally unique, so match it
+			// across all main sessions regardless of cwd (covers the case where
+			// lsof failed to recover the process cwd).
+			if i, ok := mainByID[p.sessionID]; ok {
+				all[i].HasProcess = true
+				mainHasProcess[all[i].ID] = true
+			}
+		case p.sessionPrefix != "":
+			for _, i := range byPath[p.cwd] {
+				if strings.HasPrefix(all[i].ID, p.sessionPrefix) {
+					all[i].HasProcess = true
+					mainHasProcess[all[i].ID] = true
+				}
+			}
+		default:
+			fallbackCount[p.cwd]++
+		}
+	}
+
+	// Stage 2: recency fallback for id-less processes.
 	for path, idxs := range byPath {
-		n := procCount[path]
+		n := fallbackCount[path]
 		if n == 0 {
 			continue
 		}
-		sort.Slice(idxs, func(a, b int) bool {
-			return all[idxs[a]].LastModified.After(all[idxs[b]].LastModified)
-		})
-		if n > len(idxs) {
-			n = len(idxs)
+		// Only sessions not already claimed in stage 1 compete.
+		free := make([]int, 0, len(idxs))
+		for _, i := range idxs {
+			if !all[i].HasProcess {
+				free = append(free, i)
+			}
 		}
-		for _, i := range idxs[:n] {
+		sort.Slice(free, func(a, b int) bool {
+			return all[free[a]].LastModified.After(all[free[b]].LastModified)
+		})
+		if n > len(free) {
+			n = len(free)
+		}
+		for _, i := range free[:n] {
 			all[i].HasProcess = true
 			mainHasProcess[all[i].ID] = true
 		}

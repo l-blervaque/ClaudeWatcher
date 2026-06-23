@@ -126,18 +126,26 @@ Open with `o` or the `tab` key. Available toggles:
 
 ## How it works
 
-1. Lists all `claude` CLI processes with `pgrep -x claude`
-2. For each, reads its `cwd` with `lsof -d cwd`
+1. Lists all `claude` CLI processes with `pgrep -x claude`, then reads each
+   one's command line (`ps`) to drop non-sessions — the background `daemon`
+   and headless `claude -p` / `--print` runs — which would otherwise inflate
+   the per-folder count.
+2. For each remaining process, reads its `cwd` with `lsof -d cwd` and tries to
+   recover the exact session id it is running: from a `--resume <uuid>`
+   argument (terminal / cmux / tmux) or a desktop-app PTY-host socket path.
 3. Walks `~/.claude/projects/*/` and reads each `.jsonl` to extract:
    - Real `cwd` (more reliable than decoding the encoded folder name —
      `-` is ambiguous between a path separator and a literal dash)
    - `custom-title` (set via `/rename`) and `ai-title`
    - First user prompt
-   - Token usage from the last assistant message
+   - Token usage and model from the last assistant message
    - Last assistant message text (for the detail preview)
    - API error count, queue depth, subagent relationship
-4. For each project with N running processes, the N most recently
-   modified `.jsonl` files are marked as "open"
+4. Marks sessions "open" in two stages: first an **exact match** for any
+   process whose session id was recovered (so a just-exited session can't keep
+   its badge by borrowing a sibling's process), then a **recency fallback** for
+   id-less processes — the N most recently modified main sessions in that cwd
+   that weren't already claimed.
 5. Subagent sessions are grouped under their parent and inherit the
    parent's "open" status if recently modified
 
