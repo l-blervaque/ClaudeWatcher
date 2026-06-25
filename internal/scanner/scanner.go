@@ -46,20 +46,24 @@ var sockRE = regexp.MustCompile(`/pty/([0-9a-fA-F]+)\.sock`)
 var uuidRE = regexp.MustCompile(`^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$`)
 
 // sessionIDFromCmdline recovers the full session UUID from a `claude` command
-// line that resumes a session, i.e. `--resume <uuid>` or `--resume=<uuid>`.
-// Returns "" when no resume id is present (a freshly started session). Pure
-// function over the command line so it is unit-testable without spawning procs.
+// line that names its session, via either `--resume <uuid>` (terminal / cmux
+// resume) or `--session-id <uuid>` (skills/scripts that pre-assign an id, e.g.
+// /lattice-*). Both the space and `=` forms are accepted. Returns "" when no id
+// is present (a freshly started session). Pure function over the command line
+// so it is unit-testable without spawning procs.
 func sessionIDFromCmdline(cmdline string) string {
 	fields := strings.Fields(cmdline)
 	for i, f := range fields {
-		if v, ok := strings.CutPrefix(f, "--resume="); ok {
-			if uuidRE.MatchString(v) {
-				return v
+		for _, flag := range []string{"--resume", "--session-id"} {
+			if v, ok := strings.CutPrefix(f, flag+"="); ok {
+				if uuidRE.MatchString(v) {
+					return v
+				}
+				continue
 			}
-			continue
-		}
-		if f == "--resume" && i+1 < len(fields) && uuidRE.MatchString(fields[i+1]) {
-			return fields[i+1]
+			if f == flag && i+1 < len(fields) && uuidRE.MatchString(fields[i+1]) {
+				return fields[i+1]
+			}
 		}
 	}
 	return ""
@@ -81,7 +85,10 @@ func runningClaudeProcs() []claudeProc {
 
 	var procs []claudeProc
 	for _, pid := range pids {
-		cmdOut, err := exec.Command("ps", "-o", "command=", "-p", pid).Output()
+		// -ww disables ps's column truncation: a session id (or --resume uuid)
+		// near the end of a long command line would otherwise be cut off and
+		// fail to match, dropping the process to the fragile recency fallback.
+		cmdOut, err := exec.Command("ps", "-ww", "-o", "command=", "-p", pid).Output()
 		if err != nil {
 			continue
 		}
