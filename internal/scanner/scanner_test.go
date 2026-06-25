@@ -22,6 +22,14 @@ func TestSessionIDFromCmdline(t *testing.T) {
 		{"fresh session, no resume", "claude", ""},
 		{"resume without value", "claude --resume", ""},
 		{"resume with non-uuid value", "claude --resume not-a-uuid", ""},
+		// `--session-id <uuid>` is the other exact-identity form: skills and
+		// scripts (e.g. /lattice-*) launch claude with a pre-assigned id rather
+		// than --resume. It names the transcript directly, so treat it like resume.
+		{"plain session-id", "claude --session-id " + uuid, uuid},
+		{"abs path session-id", "/Users/ludo/.local/bin/claude --session-id " + uuid, uuid},
+		{"session-id equals form", "claude --session-id=" + uuid, uuid},
+		{"session-id without value", "claude --session-id", ""},
+		{"session-id with non-uuid value", "claude --session-id nope", ""},
 	}
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {
