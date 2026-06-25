@@ -7,10 +7,52 @@ import (
 	"regexp"
 	"sort"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/ludo/claudewatcher/internal/session"
 )
+
+// parseJSONL parses a session file into stats. Indirected through a variable
+// so tests can count how often a file is actually parsed.
+var parseJSONL = session.ScanJSONL
+
+// statsCacheEntry remembers the parse result for a file, keyed by the file
+// identity (mtime + size). A session jsonl's parsed stats are a pure function
+// of its contents, so if neither mtime nor size changed since the last scan we
+// can reuse the cached stats instead of re-reading and re-parsing the file.
+type statsCacheEntry struct {
+	modTime time.Time
+	size    int64
+	stats   session.JSONLStats
+}
+
+var (
+	statsCacheMu sync.Mutex
+	statsCache   = map[string]statsCacheEntry{}
+)
+
+// scanJSONLCached returns parsed stats for path, reusing a cached result when
+// the file's mtime and size are unchanged. This keeps idle scans cheap: only
+// the handful of files that changed since the previous tick are re-parsed,
+// rather than every historical session file on every tick.
+func scanJSONLCached(path string, info os.FileInfo) session.JSONLStats {
+	modTime, size := info.ModTime(), info.Size()
+
+	statsCacheMu.Lock()
+	entry, ok := statsCache[path]
+	statsCacheMu.Unlock()
+	if ok && entry.size == size && entry.modTime.Equal(modTime) {
+		return entry.stats
+	}
+
+	stats, _ := parseJSONL(path)
+
+	statsCacheMu.Lock()
+	statsCache[path] = statsCacheEntry{modTime: modTime, size: size, stats: stats}
+	statsCacheMu.Unlock()
+	return stats
+}
 
 // projectsRoot returns ~/.claude/projects
 func projectsRoot() (string, error) {
@@ -82,35 +124,62 @@ func runningClaudeProcs() []claudeProc {
 		return nil
 	}
 	pids := strings.Fields(string(out))
+	if len(pids) == 0 {
+		return nil
+	}
+
+	// Batch the per-pid lookups into one ps and one lsof call. Both tools have
+	// heavy per-invocation startup cost, so spawning them once per pid (34
+	// processes per tick at 17 sessions) was the dominant cost of a scan.
+	// Ignore exit status on both: each exits non-zero when any pid in the list
+	// has already exited (the gap between pgrep and here), but still prints the
+	// surviving pids on stdout — parsing what we got preserves the per-pid
+	// resilience of the old one-call-per-pid loops.
+
+	// cmdline per pid: `ps -o pid=,command=` prints "<pid> <command…>". -ww
+	// disables column truncation, so a session id near the end of a long command
+	// line isn't cut off (which would fail the uuid match and drop the process to
+	// the fragile recency fallback).
+	cmdByPid := map[string]string{}
+	psOut, _ := exec.Command("ps", "-ww", "-o", "pid=,command=", "-p", strings.Join(pids, ",")).Output()
+	for _, line := range strings.Split(string(psOut), "\n") {
+		line = strings.TrimSpace(line)
+		if line == "" {
+			continue
+		}
+		parts := strings.SplitN(line, " ", 2)
+		if len(parts) != 2 {
+			continue
+		}
+		cmdByPid[parts[0]] = strings.TrimSpace(parts[1])
+	}
+
+	// cwd per pid: `-Fpn` emits a `p<pid>` line followed by the `n<path>` cwd
+	// line for that process, so we can key each cwd to its pid.
+	cwdByPid := map[string]string{}
+	lo, _ := exec.Command("lsof", "-a", "-p", strings.Join(pids, ","), "-d", "cwd", "-Fpn", "-w").Output()
+	var curPid string
+	for _, line := range strings.Split(string(lo), "\n") {
+		switch {
+		case strings.HasPrefix(line, "p"):
+			curPid = line[1:]
+		case strings.HasPrefix(line, "n/") && curPid != "":
+			cwdByPid[curPid] = strings.TrimPrefix(line, "n")
+		}
+	}
 
 	var procs []claudeProc
 	for _, pid := range pids {
-		// -ww disables ps's column truncation: a session id (or --resume uuid)
-		// near the end of a long command line would otherwise be cut off and
-		// fail to match, dropping the process to the fragile recency fallback.
-		cmdOut, err := exec.Command("ps", "-ww", "-o", "command=", "-p", pid).Output()
-		if err != nil {
+		cmdline, ok := cmdByPid[pid]
+		if !ok || !isSessionProc(cmdline) {
 			continue
-		}
-		cmdline := strings.TrimSpace(string(cmdOut))
-		if !isSessionProc(cmdline) {
-			continue
-		}
-		var cwd string
-		if lo, err := exec.Command("lsof", "-a", "-p", pid, "-d", "cwd", "-Fn").Output(); err == nil {
-			for _, line := range strings.Split(string(lo), "\n") {
-				if strings.HasPrefix(line, "n/") {
-					cwd = strings.TrimPrefix(line, "n")
-					break
-				}
-			}
 		}
 		var prefix string
 		if m := sockRE.FindStringSubmatch(cmdline); m != nil {
 			prefix = m[1]
 		}
 		procs = append(procs, claudeProc{
-			cwd:           cwd,
+			cwd:           cwdByPid[pid],
 			sessionID:     sessionIDFromCmdline(cmdline),
 			sessionPrefix: prefix,
 		})
@@ -197,7 +266,7 @@ func Scan(opts ScanOptions) ([]session.Session, error) {
 					if err != nil {
 						continue
 					}
-					stats, _ := session.ScanJSONL(jsonlPath)
+					stats := scanJSONLCached(jsonlPath, info)
 					id := strings.TrimSuffix(sf.Name(), ".jsonl")
 
 					path := projectPath
@@ -245,7 +314,7 @@ func Scan(opts ScanOptions) ([]session.Session, error) {
 			if err != nil {
 				continue
 			}
-			stats, _ := session.ScanJSONL(jsonlPath)
+			stats := scanJSONLCached(jsonlPath, info)
 			id := strings.TrimSuffix(f.Name(), ".jsonl")
 
 			// Prefer the real cwd from the jsonl — folder-name decoding
