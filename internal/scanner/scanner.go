@@ -1,11 +1,13 @@
 package scanner
 
 import (
+	"fmt"
 	"os"
 	"os/exec"
 	"path/filepath"
 	"regexp"
 	"sort"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -65,6 +67,9 @@ func projectsRoot() (string, error) {
 
 // claudeProc describes a live `claude` process that represents a real session.
 type claudeProc struct {
+	// pid is the OS process id. Carried for the read-only diagnostic so an
+	// attribution audit can name the exact process.
+	pid int
 	// cwd is the process working directory (used for the recency fallback
 	// when the exact session can't be recovered).
 	cwd string
@@ -111,37 +116,39 @@ func sessionIDFromCmdline(cmdline string) string {
 	return ""
 }
 
+// isClaudeExe reports whether a command line's executable (argv[0]) is the
+// `claude` CLI, matching by basename so it catches both `claude …` and
+// `/path/to/claude …`. `pgrep -x claude` matches the process accounting name
+// (comm), which is the bare basename for some launches and the full executable
+// path for others — that inconsistency let it silently miss live sessions
+// (observed: a session whose comm was the full path), which then showed as
+// ghosts. Matching the basename of the real argv[0] is stable across launches.
+func isClaudeExe(cmdline string) bool {
+	fields := strings.Fields(cmdline)
+	if len(fields) == 0 {
+		return false
+	}
+	return filepath.Base(fields[0]) == "claude"
+}
+
 // runningClaudeProcs returns the live `claude` processes that represent real
-// sessions. `pgrep -x claude` matches the exact executable name, but that name
-// is shared by the background daemon and headless `claude -p` runs, which are
-// not sessions and would inflate the per-cwd count — those are dropped here.
-// For exact attribution we recover the session id two ways: from a
-// `--resume <uuid>` argument (the common case — terminal / cmux / tmux) and,
-// failing that, from a desktop-app PTY-host socket path (…/pty/<prefix>.sock).
+// sessions. We enumerate every process in a single `ps -Aww` read and keep
+// those whose executable basename is `claude`. This avoids depending on
+// `pgrep -x claude`, whose name (comm) matching is inconsistent across launches
+// and missed real sessions. The background daemon and headless `claude -p` runs
+// are not sessions and are dropped by isSessionProc. For exact attribution we
+// recover the session id from a `--resume`/`--session-id <uuid>` argument, or a
+// desktop PTY-host socket path.
 func runningClaudeProcs() []claudeProc {
-	out, err := exec.Command("pgrep", "-x", "claude").Output()
+	// One `ps -Aww` lists every process with its full (untruncated) command
+	// line, so a session id near the end of a long line isn't cut off. We then
+	// keep only the claude session processes.
+	psOut, err := exec.Command("ps", "-Aww", "-o", "pid=,command=").Output()
 	if err != nil {
 		return nil
 	}
-	pids := strings.Fields(string(out))
-	if len(pids) == 0 {
-		return nil
-	}
-
-	// Batch the per-pid lookups into one ps and one lsof call. Both tools have
-	// heavy per-invocation startup cost, so spawning them once per pid (34
-	// processes per tick at 17 sessions) was the dominant cost of a scan.
-	// Ignore exit status on both: each exits non-zero when any pid in the list
-	// has already exited (the gap between pgrep and here), but still prints the
-	// surviving pids on stdout — parsing what we got preserves the per-pid
-	// resilience of the old one-call-per-pid loops.
-
-	// cmdline per pid: `ps -o pid=,command=` prints "<pid> <command…>". -ww
-	// disables column truncation, so a session id near the end of a long command
-	// line isn't cut off (which would fail the uuid match and drop the process to
-	// the fragile recency fallback).
 	cmdByPid := map[string]string{}
-	psOut, _ := exec.Command("ps", "-ww", "-o", "pid=,command=", "-p", strings.Join(pids, ",")).Output()
+	var pids []string
 	for _, line := range strings.Split(string(psOut), "\n") {
 		line = strings.TrimSpace(line)
 		if line == "" {
@@ -151,11 +158,22 @@ func runningClaudeProcs() []claudeProc {
 		if len(parts) != 2 {
 			continue
 		}
-		cmdByPid[parts[0]] = strings.TrimSpace(parts[1])
+		pid, cmdline := parts[0], strings.TrimSpace(parts[1])
+		if !isClaudeExe(cmdline) || !isSessionProc(cmdline) {
+			continue
+		}
+		cmdByPid[pid] = cmdline
+		pids = append(pids, pid)
+	}
+	if len(pids) == 0 {
+		return nil
 	}
 
 	// cwd per pid: `-Fpn` emits a `p<pid>` line followed by the `n<path>` cwd
-	// line for that process, so we can key each cwd to its pid.
+	// line for that process, so we can key each cwd to its pid. Batched into one
+	// lsof call (heavy per-invocation startup cost). Ignore exit status: it
+	// exits non-zero when any listed pid has already exited but still prints the
+	// survivors.
 	cwdByPid := map[string]string{}
 	lo, _ := exec.Command("lsof", "-a", "-p", strings.Join(pids, ","), "-d", "cwd", "-Fpn", "-w").Output()
 	var curPid string
@@ -170,15 +188,14 @@ func runningClaudeProcs() []claudeProc {
 
 	var procs []claudeProc
 	for _, pid := range pids {
-		cmdline, ok := cmdByPid[pid]
-		if !ok || !isSessionProc(cmdline) {
-			continue
-		}
+		cmdline := cmdByPid[pid]
 		var prefix string
 		if m := sockRE.FindStringSubmatch(cmdline); m != nil {
 			prefix = m[1]
 		}
+		pidNum, _ := strconv.Atoi(pid)
 		procs = append(procs, claudeProc{
+			pid:           pidNum,
 			cwd:           cwdByPid[pid],
 			sessionID:     sessionIDFromCmdline(cmdline),
 			sessionPrefix: prefix,
@@ -355,21 +372,34 @@ func Scan(opts ScanOptions) ([]session.Session, error) {
 		}
 	}
 
-	// Attribute live processes to MAIN sessions. Subagents are excluded from
-	// this competition: they inherit HasProcess from their parent main session
-	// in the second pass below.
-	//
-	// Two-stage attribution:
-	//  1. Exact match — when a process names its own session, mark exactly that
-	//     session so an unrelated transcript in the same folder (e.g. one just
-	//     touched by `/exit`) can't steal it. The identity comes from either a
-	//     `--resume <uuid>` argument (full id, matched globally) or, failing
-	//     that, a desktop PTY-host socket prefix (matched within the cwd to
-	//     bound the tiny prefix-collision risk).
-	//  2. Recency fallback — processes with no recoverable session id (a
-	//     freshly started terminal session) are counted per cwd; the top-N most
-	//     recently modified main sessions in that cwd that weren't already
-	//     claimed in stage 1 are marked open.
+	attribute(all, procs, now)
+
+	out := make([]session.Session, 0, len(all))
+	for _, s := range all {
+		s.Status = session.DetermineStatus(s.HasProcess, s.LastModified, s.LastRole, now)
+		if !opts.IncludeEnded && s.Status == session.StatusEnded {
+			continue
+		}
+		out = append(out, s)
+	}
+	return out, nil
+}
+
+// attribute marks all[i].HasProcess for the MAIN sessions that have a live
+// `claude` process, then propagates the flag to recent subagents. It is pure
+// over its inputs (no I/O) so attribution can be tested with synthetic data.
+//
+// Two-stage attribution:
+//  1. Exact match — a process that names its own session (a `--resume`/
+//     `--session-id <uuid>`, or a desktop PTY-host socket prefix) marks exactly
+//     that session, so an unrelated transcript in the same folder (e.g. one
+//     just touched by `/exit`, or a more-recent dead transcript) can't steal
+//     it. The full UUID is globally unique, so it matches regardless of cwd.
+//  2. Recency fallback — processes with no recoverable session id (a freshly
+//     started session) are counted per cwd; the top-N most recently modified
+//     unclaimed sessions in that cwd are marked. This is best-effort: with no
+//     identity it can mark a more-recent dead transcript over a quiet live one.
+func attribute(all []session.Session, procs []claudeProc, now time.Time) {
 	byPath := map[string][]int{}
 	mainByID := map[string]int{} // full session ID -> index in all (main sessions only)
 	for i, s := range all {
@@ -386,9 +416,6 @@ func Scan(opts ScanOptions) ([]session.Session, error) {
 	for _, p := range procs {
 		switch {
 		case p.sessionID != "":
-			// Strongest signal: a full UUID is globally unique, so match it
-			// across all main sessions regardless of cwd (covers the case where
-			// lsof failed to recover the process cwd).
 			if i, ok := mainByID[p.sessionID]; ok {
 				all[i].HasProcess = true
 				mainHasProcess[all[i].ID] = true
@@ -429,25 +456,79 @@ func Scan(opts ScanOptions) ([]session.Session, error) {
 			mainHasProcess[all[i].ID] = true
 		}
 	}
-	// Subagents inherit HasProcess from their parent main session only if
-	// their jsonl file was modified recently (same 5-minute threshold used by
-	// DetermineStatus). Stale/finished subagents must never inherit the flag
-	// just because their parent process is still alive.
+
+	// Subagents inherit HasProcess from their parent main session only if their
+	// jsonl was modified recently (same 5-minute threshold as DetermineStatus).
+	// Stale/finished subagents must never inherit the flag just because their
+	// parent process is still alive.
 	for i, s := range all {
 		if s.ParentID != "" && mainHasProcess[s.ParentID] && now.Sub(s.LastModified) < 5*time.Minute {
 			all[i].HasProcess = true
 		}
 	}
+}
 
-	out := make([]session.Session, 0, len(all))
-	for _, s := range all {
-		s.Status = session.DetermineStatus(s.HasProcess, s.LastModified, s.LastRole, now)
-		if !opts.IncludeEnded && s.Status == session.StatusEnded {
+// ProcDiag is one row of the read-only attribution diagnostic.
+type ProcDiag struct {
+	PID    int
+	UUID   string // session id recovered from the cmdline, "" if none
+	Cwd    string
+	Status string // matched | no-uuid (recency) | transcript-found-not-marked | UNMATCHED (no transcript)
+}
+
+// Diagnose reports, for every live claude session process, how the scanner
+// attributed it. It runs the same detection + scan as the TUI and is read-only
+// (no process is touched), so an attribution regression can be audited directly
+// instead of looking like a UI problem.
+func Diagnose() ([]ProcDiag, error) {
+	procs := runningClaudeProcs()
+	ss, err := Scan(ScanOptions{IncludeEnded: true})
+	if err != nil {
+		return nil, err
+	}
+	exists := map[string]bool{}
+	marked := map[string]bool{}
+	for _, s := range ss {
+		if s.ParentID != "" {
 			continue
 		}
-		out = append(out, s)
+		exists[s.ID] = true
+		if s.HasProcess {
+			marked[s.ID] = true
+		}
+	}
+	out := make([]ProcDiag, 0, len(procs))
+	for _, p := range procs {
+		d := ProcDiag{PID: p.pid, UUID: p.sessionID, Cwd: p.cwd}
+		switch {
+		case p.sessionID == "":
+			d.Status = "no-uuid (recency)"
+		case marked[p.sessionID]:
+			d.Status = "matched"
+		case exists[p.sessionID]:
+			d.Status = "transcript-found-not-marked"
+		default:
+			d.Status = "UNMATCHED (no transcript)"
+		}
+		out = append(out, d)
 	}
 	return out, nil
+}
+
+// FormatDiagnosis renders diagnostic rows as an aligned text table. Pure, so it
+// is unit-testable independently of live process enumeration.
+func FormatDiagnosis(diags []ProcDiag) string {
+	var b strings.Builder
+	fmt.Fprintf(&b, "%-7s %-38s %-28s %s\n", "PID", "UUID", "STATUS", "CWD")
+	for _, d := range diags {
+		uuid := d.UUID
+		if uuid == "" {
+			uuid = "-"
+		}
+		fmt.Fprintf(&b, "%-7d %-38s %-28s %s\n", d.PID, uuid, d.Status, d.Cwd)
+	}
+	fmt.Fprintf(&b, "\n%d process\n", len(diags))
+	return b.String()
 }
 
 // cleanTitle collapses whitespace and trims.
