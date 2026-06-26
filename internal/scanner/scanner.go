@@ -6,10 +6,52 @@ import (
 	"path/filepath"
 	"sort"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/ludo/claudewatcher/internal/session"
 )
+
+// parseJSONL parses a session file into stats. Indirected through a variable
+// so tests can count how often a file is actually parsed.
+var parseJSONL = session.ScanJSONL
+
+// statsCacheEntry remembers the parse result for a file, keyed by the file
+// identity (mtime + size). A session jsonl's parsed stats are a pure function
+// of its contents, so if neither mtime nor size changed since the last scan we
+// can reuse the cached stats instead of re-reading and re-parsing the file.
+type statsCacheEntry struct {
+	modTime time.Time
+	size    int64
+	stats   session.JSONLStats
+}
+
+var (
+	statsCacheMu sync.Mutex
+	statsCache   = map[string]statsCacheEntry{}
+)
+
+// scanJSONLCached returns parsed stats for path, reusing a cached result when
+// the file's mtime and size are unchanged. This keeps idle scans cheap: only
+// the handful of files that changed since the previous tick are re-parsed,
+// rather than every historical session file on every tick.
+func scanJSONLCached(path string, info os.FileInfo) session.JSONLStats {
+	modTime, size := info.ModTime(), info.Size()
+
+	statsCacheMu.Lock()
+	entry, ok := statsCache[path]
+	statsCacheMu.Unlock()
+	if ok && entry.size == size && entry.modTime.Equal(modTime) {
+		return entry.stats
+	}
+
+	stats, _ := parseJSONL(path)
+
+	statsCacheMu.Lock()
+	statsCache[path] = statsCacheEntry{modTime: modTime, size: size, stats: stats}
+	statsCacheMu.Unlock()
+	return stats
+}
 
 // projectsRoot returns ~/.claude/projects
 func projectsRoot() (string, error) {
@@ -31,17 +73,20 @@ func runningClaudeCwds() []string {
 		return nil
 	}
 	pids := strings.Fields(string(out))
+	if len(pids) == 0 {
+		return nil
+	}
 
+	// One lsof for all pids rather than one per pid: lsof's per-invocation
+	// startup cost dominated the scan. Ignore exit status — lsof exits non-zero
+	// when any listed pid has already exited (the gap since pgrep) but still
+	// prints the survivors on stdout. One `n/<cwd>` line is emitted per process,
+	// so duplicates are preserved and callers can still count sessions per cwd.
 	var cwds []string
-	for _, pid := range pids {
-		lo, err := exec.Command("lsof", "-a", "-p", pid, "-d", "cwd", "-Fn").Output()
-		if err != nil {
-			continue
-		}
-		for _, line := range strings.Split(string(lo), "\n") {
-			if strings.HasPrefix(line, "n/") {
-				cwds = append(cwds, strings.TrimPrefix(line, "n"))
-			}
+	lo, _ := exec.Command("lsof", "-a", "-p", strings.Join(pids, ","), "-d", "cwd", "-Fn", "-w").Output()
+	for _, line := range strings.Split(string(lo), "\n") {
+		if strings.HasPrefix(line, "n/") {
+			cwds = append(cwds, strings.TrimPrefix(line, "n"))
 		}
 	}
 	return cwds
@@ -107,7 +152,7 @@ func Scan(opts ScanOptions) ([]session.Session, error) {
 					if err != nil {
 						continue
 					}
-					stats, _ := session.ScanJSONL(jsonlPath)
+					stats := scanJSONLCached(jsonlPath, info)
 					id := strings.TrimSuffix(sf.Name(), ".jsonl")
 
 					path := projectPath
@@ -155,7 +200,7 @@ func Scan(opts ScanOptions) ([]session.Session, error) {
 			if err != nil {
 				continue
 			}
-			stats, _ := session.ScanJSONL(jsonlPath)
+			stats := scanJSONLCached(jsonlPath, info)
 			id := strings.TrimSuffix(f.Name(), ".jsonl")
 
 			// Prefer the real cwd from the jsonl — folder-name decoding
