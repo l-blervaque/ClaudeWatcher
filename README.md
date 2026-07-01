@@ -25,6 +25,8 @@ For each session:
 - **Cache %** — read cache hit rate for the session
 - **Messages** — total user + assistant message count
 - **Last activity** — relative time (`30s`, `2m`, `1h`, …)
+- **Model** — short label of the last assistant message's model (e.g. `Opus 4.8`)
+- **CLI version** — the Claude Code version running the session (e.g. `2.1.197`)
 - **Badges** — `[P]` principal · `[S]` subagent · `[MULTI]` compacted ·
   `[ERR]` API errors · `[Q:N]` pending queue
 
@@ -120,7 +122,8 @@ The list also auto-refreshes every 2 seconds.
 Open with `o` or the `tab` key. Available toggles:
 
 - **Sounds** — enable / disable notification sounds, choose sound
-- **Columns** — show/hide Cache, Ctx, Msgs, Age, Badges columns individually
+- **Columns** — show/hide Cache, Ctx, Msgs, Age, Model, CLI version, Badges
+  columns individually
 - **Display → Nerd Fonts** — use Nerd Font glyphs for status icons (requires
   a Nerd Font installed and set in your terminal)
 
