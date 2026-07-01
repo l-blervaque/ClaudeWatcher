@@ -64,32 +64,33 @@ func (s Status) Label() string {
 }
 
 type Session struct {
-	ID              string
-	ProjectDir      string
-	ProjectPath     string
-	ProjectName     string
-	Title           string // resolved display name
-	TitleSource     string // "custom" | "ai" | "prompt" | ""
-	CustomTitle     string
-	AiTitle         string
-	FirstPrompt     string
-	JSONLPath       string
-	LastModified    time.Time
-	MessageCount    int
-	LastRole        string
-	ContextTokens   int
-	Model           string // last assistant message model id (e.g. "claude-opus-4-7")
-	LastAssistant   string
-	Status          Status
-	HasProcess      bool
-	IsSubagent      bool   // true if no main-session marker lines found in first 30 lines
-	ParentID        string // non-empty for subagent sessions: UUID of the parent main session
-	CacheEfficiency float64 // cache_read / (input + cache_read + cache_creation), -1 if not calculable
-	AwaySummaryCount int   // number of "system" lines with subtype "away_summary"
-	ApiErrorCount   int
-	TurnCount       int
-	ApiErrorRate    float64 // ApiErrorCount / TurnCount, 0 if TurnCount == 0
-	QueueDepth      int    // enqueue - dequeue (min 0), from queue-operation lines
+	ID               string
+	ProjectDir       string
+	ProjectPath      string
+	ProjectName      string
+	Title            string // resolved display name
+	TitleSource      string // "custom" | "ai" | "prompt" | ""
+	CustomTitle      string
+	AiTitle          string
+	FirstPrompt      string
+	JSONLPath        string
+	LastModified     time.Time
+	MessageCount     int
+	LastRole         string
+	ContextTokens    int
+	Model            string // last assistant message model id (e.g. "claude-opus-4-7")
+	Version          string // Claude Code CLI version in use (e.g. "2.1.197")
+	LastAssistant    string
+	Status           Status
+	HasProcess       bool
+	IsSubagent       bool    // true if no main-session marker lines found in first 30 lines
+	ParentID         string  // non-empty for subagent sessions: UUID of the parent main session
+	CacheEfficiency  float64 // cache_read / (input + cache_read + cache_creation), -1 if not calculable
+	AwaySummaryCount int     // number of "system" lines with subtype "away_summary"
+	ApiErrorCount    int
+	TurnCount        int
+	ApiErrorRate     float64 // ApiErrorCount / TurnCount, 0 if TurnCount == 0
+	QueueDepth       int     // enqueue - dequeue (min 0), from queue-operation lines
 }
 
 // Default context window when the model is unknown.
@@ -177,13 +178,14 @@ func ProjectNameFromDir(name string) string {
 
 // jsonlLine is a minimal struct to extract everything we care about.
 type jsonlLine struct {
-	Type    string `json:"type"`
-	Subtype string `json:"subtype"`
-	Cwd     string `json:"cwd"`
+	Type        string `json:"type"`
+	Subtype     string `json:"subtype"`
+	Cwd         string `json:"cwd"`
+	Version     string `json:"version"` // Claude Code CLI version, e.g. "2.1.197"
 	CustomTitle string `json:"customTitle"`
 	AiTitle     string `json:"aiTitle"`
-	Action  string `json:"action"` // for queue-operation lines: "enqueue" | "dequeue"
-	Message struct {
+	Action      string `json:"action"` // for queue-operation lines: "enqueue" | "dequeue"
+	Message     struct {
 		Role    string          `json:"role"`
 		Model   string          `json:"model"`
 		Content json.RawMessage `json:"content"`
@@ -201,6 +203,7 @@ type JSONLStats struct {
 	MessageCount     int
 	LastRole         string
 	Cwd              string  // real working directory
+	Version          string  // Claude Code CLI version (last non-empty value seen)
 	FirstPrompt      string  // first user message with string content
 	CustomTitle      string  // last /rename value
 	AiTitle          string  // last auto-generated title
@@ -213,7 +216,7 @@ type JSONLStats struct {
 	ApiErrorCount    int
 	TurnCount        int
 	ApiErrorRate     float64 // ApiErrorCount / TurnCount, 0 if TurnCount == 0
-	QueueDepth       int    // enqueue - dequeue (min 0)
+	QueueDepth       int     // enqueue - dequeue (min 0)
 }
 
 // mainSessionTypes is the set of line types that only appear in main (non-subagent) sessions.
@@ -262,6 +265,11 @@ func ScanJSONL(path string) (JSONLStats, error) {
 
 		if l.Cwd != "" && stats.Cwd == "" {
 			stats.Cwd = l.Cwd
+		}
+		// CLI version: last non-empty wins, so a session resumed across a
+		// CLI upgrade reflects the version currently running.
+		if l.Version != "" {
+			stats.Version = l.Version
 		}
 		// Titles: last one wins (user can /rename multiple times).
 		if l.Type == "custom-title" && l.CustomTitle != "" {

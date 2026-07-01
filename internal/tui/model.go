@@ -139,10 +139,10 @@ func tick() tea.Cmd {
 
 // optionsMaxCursor is the highest valid optCursor index in the Options tab.
 // Sons: 0=toggle, 1=sound selector → 2 items
-// Colonnes: 2=ShowCache, 3=ShowCtx, 4=ShowMsgs, 5=ShowAge, 6=ShowModel, 7=ShowBadges → 6 items
-// Display: 8=NerdFonts → 1 item
-// Total indices: 0..8 → 8
-const optionsMaxCursor = 8
+// Colonnes: 2=ShowCache, 3=ShowCtx, 4=ShowMsgs, 5=ShowAge, 6=ShowModel, 7=ShowVersion, 8=ShowBadges → 7 items
+// Display: 9=NerdFonts → 1 item
+// Total indices: 0..9 → 9
+const optionsMaxCursor = 9
 
 func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	switch msg := msg.(type) {
@@ -192,8 +192,10 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				case 6:
 					m.cfg.ShowModel = !m.cfg.ShowModel
 				case 7:
-					m.cfg.ShowBadges = !m.cfg.ShowBadges
+					m.cfg.ShowVersion = !m.cfg.ShowVersion
 				case 8:
+					m.cfg.ShowBadges = !m.cfg.ShowBadges
+				case 9:
 					m.cfg.NerdFonts = !m.cfg.NerdFonts
 				}
 			case "tab":
@@ -566,7 +568,8 @@ func (m Model) renderOptions() string {
 		{"Msgs", m.cfg.ShowMsgs, 4},
 		{"Age", m.cfg.ShowAge, 5},
 		{"Model", m.cfg.ShowModel, 6},
-		{"Badges", m.cfg.ShowBadges, 7},
+		{"CLI version", m.cfg.ShowVersion, 7},
+		{"Badges", m.cfg.ShowBadges, 8},
 	}
 	for _, col := range colOptions {
 		chk := "[ ]"
@@ -587,7 +590,7 @@ func (m Model) renderOptions() string {
 	if m.cfg.NerdFonts {
 		nfCheck = "[x]"
 	}
-	b.WriteString(bars[8])
+	b.WriteString(bars[9])
 	b.WriteString(fmt.Sprintf(" %s Nerd Fonts\n", nfCheck))
 
 	// Visual hint line below the toggle: if the glyph renders as an icon the font works.
@@ -783,6 +786,7 @@ const (
 	wideColMsg   = 5
 	wideColAgo   = 8
 	wideColModel = 10
+	wideColVer   = 8 // fits "2.1.197" with room to spare
 	wideColBadge = 12
 	// gap chars between columns: icon(1) + spaces between each col = 7 separators
 	wideColGaps = 7
@@ -860,7 +864,7 @@ func (m Model) renderListNarrow() string {
 			leftBudget = 8
 		}
 		title = truncate(title, leftBudget-2) // room for at least 2 dots
-		fillN := leftBudget - len(title) - 1   // 1 = space after title
+		fillN := leftBudget - len(title) - 1  // 1 = space after title
 		if fillN < 1 {
 			fillN = 1
 		}
@@ -885,6 +889,11 @@ func (m Model) renderListNarrow() string {
 		if m.cfg.ShowModel {
 			if label := session.ModelLabel(s.Model); label != "" {
 				line3parts = append(line3parts, label)
+			}
+		}
+		if m.cfg.ShowVersion {
+			if s.Version != "" {
+				line3parts = append(line3parts, "cli "+s.Version)
 			}
 		}
 		line3 := "  " + strings.Join(line3parts, " · ")
@@ -947,6 +956,9 @@ func (m Model) renderListWide() string {
 	if m.cfg.ShowModel {
 		optColsW += wideColModel + 1
 	}
+	if m.cfg.ShowVersion {
+		optColsW += wideColVer + 1
+	}
 	if m.cfg.ShowBadges {
 		optColsW += wideColBadge + 2
 	}
@@ -976,6 +988,9 @@ func (m Model) renderListWide() string {
 	}
 	if m.cfg.ShowModel {
 		hdr.WriteString(fmt.Sprintf(" %-*s", wideColModel, "MODEL"))
+	}
+	if m.cfg.ShowVersion {
+		hdr.WriteString(fmt.Sprintf(" %-*s", wideColVer, "CLI"))
 	}
 	if m.cfg.ShowBadges {
 		hdr.WriteString(fmt.Sprintf("  %-*s", wideColBadge, "BADGES"))
@@ -1059,6 +1074,14 @@ func (m Model) renderListWide() string {
 			}
 			row.WriteString(" ")
 			row.WriteString(modelStr)
+		}
+		if m.cfg.ShowVersion {
+			verStr := fmt.Sprintf("%-*s", wideColVer, truncate(versionLabel(s.Version), wideColVer))
+			if dim {
+				verStr = dimStyle.Render(verStr)
+			}
+			row.WriteString(" ")
+			row.WriteString(verStr)
 		}
 		if m.cfg.ShowBadges {
 			badges := sessionBadges(s, dim, m.cfg.NerdFonts)
@@ -1145,6 +1168,9 @@ func (m Model) renderDetail() string {
 	if label := session.ModelLabel(s.Model); label != "" {
 		b.WriteString(fmt.Sprintf("  Model:    %s\n", label))
 	}
+	if s.Version != "" {
+		b.WriteString(fmt.Sprintf("  CLI:      %s\n", s.Version))
+	}
 	b.WriteString(fmt.Sprintf("  Context:  %s (%d / %d tokens)\n",
 		contextPct(s.ContextTokens, s.Model), s.ContextTokens, session.ContextWindowFor(s.Model)))
 	b.WriteString(fmt.Sprintf("  Cache:    %s\n", cachePct(s.CacheEfficiency, false)))
@@ -1193,6 +1219,14 @@ func shortID(id string) string {
 		return id[:8]
 	}
 	return id
+}
+
+// versionLabel returns the CLI version string, or "—" when unknown.
+func versionLabel(v string) string {
+	if v == "" {
+		return "—"
+	}
+	return v
 }
 
 // contextPct returns the context usage as "46%" (or "—" if unknown).

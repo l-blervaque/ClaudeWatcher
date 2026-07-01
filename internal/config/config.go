@@ -13,12 +13,13 @@ type Config struct {
 	SoundName    string `json:"sound_name"`
 
 	// Column visibility (wide layout). All true by default.
-	ShowCache  bool `json:"show_cache"`
-	ShowCtx    bool `json:"show_ctx"`
-	ShowMsgs   bool `json:"show_msgs"`
-	ShowAge    bool `json:"show_age"`
-	ShowModel  bool `json:"show_model"`
-	ShowBadges bool `json:"show_badges"`
+	ShowCache   bool `json:"show_cache"`
+	ShowCtx     bool `json:"show_ctx"`
+	ShowMsgs    bool `json:"show_msgs"`
+	ShowAge     bool `json:"show_age"`
+	ShowModel   bool `json:"show_model"`
+	ShowVersion bool `json:"show_version"`
+	ShowBadges  bool `json:"show_badges"`
 
 	// NerdFonts enables Nerd Font icons instead of plain Unicode/ASCII symbols.
 	// Opt-in: false by default so plain terminals are not affected.
@@ -33,6 +34,7 @@ var defaults = Config{
 	ShowMsgs:     true,
 	ShowAge:      true,
 	ShowModel:    true,
+	ShowVersion:  true,
 	ShowBadges:   true,
 }
 
