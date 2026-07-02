@@ -11,39 +11,45 @@ import (
 	"github.com/ludo/claudewatcher/internal/session"
 )
 
-func TestSessionIDFromCmdline(t *testing.T) {
+func TestSessionIDsFromCmdline(t *testing.T) {
 	const uuid = "feb19cc6-df85-43fc-a894-deca67b44acb"
+	const uuid2 = "aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee"
 	cases := []struct {
-		name    string
-		cmdline string
-		want    string
+		name        string
+		cmdline     string
+		wantSession string
+		wantResume  string
 	}{
-		{"plain resume", "claude --resume " + uuid, uuid},
-		{"abs path resume", "/Users/ludo/.local/bin/claude --resume " + uuid, uuid},
-		{"equals form", "claude --resume=" + uuid, uuid},
+		// --resume names the transcript being resumed; Claude Code forks it
+		// into a NEW session file, so it must land in resumeID (hint), never
+		// in sessionID (authoritative).
+		{"plain resume", "claude --resume " + uuid, "", uuid},
+		{"abs path resume", "/Users/ludo/.local/bin/claude --resume " + uuid, "", uuid},
+		{"resume equals form", "claude --resume=" + uuid, "", uuid},
 		{
-			// cmux wraps a long --settings JSON blob before --resume; the uuid is
-			// still recovered from the trailing argument.
 			"resume after settings blob",
 			`/Users/ludo/.local/bin/claude --settings {"hooks":{"Stop":[]}} --resume ` + uuid,
-			uuid,
+			"", uuid,
 		},
-		{"fresh session, no resume", "claude", ""},
-		{"resume without value", "claude --resume", ""},
-		{"resume with non-uuid value", "claude --resume not-a-uuid", ""},
-		// `--session-id <uuid>` is the other exact-identity form: skills and
-		// scripts (e.g. /lattice-*) launch claude with a pre-assigned id rather
-		// than --resume. It names the transcript directly, so treat it like resume.
-		{"plain session-id", "claude --session-id " + uuid, uuid},
-		{"abs path session-id", "/Users/ludo/.local/bin/claude --session-id " + uuid, uuid},
-		{"session-id equals form", "claude --session-id=" + uuid, uuid},
-		{"session-id without value", "claude --session-id", ""},
-		{"session-id with non-uuid value", "claude --session-id nope", ""},
+		// --session-id is the transcript's actual id (cmux, /lattice-* scripts).
+		{"plain session-id", "claude --session-id " + uuid, uuid, ""},
+		{"abs path session-id", "/Users/ludo/.local/bin/claude --session-id " + uuid, uuid, ""},
+		{"session-id equals form", "claude --session-id=" + uuid, uuid, ""},
+		// Degenerate forms recover nothing.
+		{"fresh session, no flags", "claude", "", ""},
+		{"resume without value", "claude --resume", "", ""},
+		{"resume with non-uuid value", "claude --resume not-a-uuid", "", ""},
+		{"session-id without value", "claude --session-id", "", ""},
+		{"session-id with non-uuid value", "claude --session-id nope", "", ""},
+		// Both present: each goes to its own field.
+		{"both flags", "claude --session-id " + uuid + " --resume " + uuid2, uuid, uuid2},
 	}
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {
-			if got := sessionIDFromCmdline(c.cmdline); got != c.want {
-				t.Errorf("sessionIDFromCmdline(%q) = %q, want %q", c.cmdline, got, c.want)
+			gotSession, gotResume := sessionIDsFromCmdline(c.cmdline)
+			if gotSession != c.wantSession || gotResume != c.wantResume {
+				t.Errorf("sessionIDsFromCmdline(%q) = (%q, %q), want (%q, %q)",
+					c.cmdline, gotSession, gotResume, c.wantSession, c.wantResume)
 			}
 		})
 	}

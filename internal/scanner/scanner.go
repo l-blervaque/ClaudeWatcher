@@ -73,11 +73,15 @@ type claudeProc struct {
 	// cwd is the process working directory (used for the recency fallback
 	// when the exact session can't be recovered).
 	cwd string
-	// sessionID is the full session UUID recovered from a `--resume <uuid>`
-	// argument. This is the strongest identity signal — exact and globally
-	// unique — and is present for every resumed terminal / cmux / tmux session.
-	// Empty for a freshly started session (no --resume on its command line).
+	// sessionID is the full session UUID recovered from a `--session-id
+	// <uuid>` argument (cmux and skills pre-assign the id). Claude Code uses
+	// exactly this id for the transcript, so it is authoritative.
 	sessionID string
+	// resumeID is the full UUID recovered from a `--resume <uuid>` argument.
+	// Claude Code FORKS the resumed conversation into a NEW session file with
+	// a new UUID, so this id usually names a dead transcript. It is a hint:
+	// only trusted while that transcript is still fresh (see attribute).
+	resumeID string
 	// sessionPrefix is the leading hex of the session UUID, recovered from a
 	// desktop-app PTY-host socket path (…/pty/<prefix>.sock). Used as a
 	// secondary signal when no --resume id is present (desktop app). Empty when
@@ -92,28 +96,33 @@ var sockRE = regexp.MustCompile(`/pty/([0-9a-fA-F]+)\.sock`)
 // uuidRE matches a canonical session UUID (the value passed to `--resume`).
 var uuidRE = regexp.MustCompile(`^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$`)
 
-// sessionIDFromCmdline recovers the full session UUID from a `claude` command
-// line that names its session, via either `--resume <uuid>` (terminal / cmux
-// resume) or `--session-id <uuid>` (skills/scripts that pre-assign an id, e.g.
-// /lattice-*). Both the space and `=` forms are accepted. Returns "" when no id
-// is present (a freshly started session). Pure function over the command line
-// so it is unit-testable without spawning procs.
-func sessionIDFromCmdline(cmdline string) string {
+// sessionIDsFromCmdline recovers session identity from a `claude` command
+// line. `--session-id <uuid>` names the transcript directly (authoritative);
+// `--resume <uuid>` names the transcript being resumed, which Claude Code
+// forks into a NEW session file — so it is only a hint. Both the space and
+// `=` forms are accepted. Pure function over the command line so it is
+// unit-testable without spawning procs.
+func sessionIDsFromCmdline(cmdline string) (sessionID, resumeID string) {
 	fields := strings.Fields(cmdline)
-	for i, f := range fields {
-		for _, flag := range []string{"--resume", "--session-id"} {
-			if v, ok := strings.CutPrefix(f, flag+"="); ok {
-				if uuidRE.MatchString(v) {
-					return v
-				}
-				continue
-			}
-			if f == flag && i+1 < len(fields) && uuidRE.MatchString(fields[i+1]) {
-				return fields[i+1]
-			}
+	get := func(flag string, i int) (string, bool) {
+		f := fields[i]
+		if v, ok := strings.CutPrefix(f, flag+"="); ok && uuidRE.MatchString(v) {
+			return v, true
+		}
+		if f == flag && i+1 < len(fields) && uuidRE.MatchString(fields[i+1]) {
+			return fields[i+1], true
+		}
+		return "", false
+	}
+	for i := range fields {
+		if v, ok := get("--session-id", i); ok {
+			sessionID = v
+		}
+		if v, ok := get("--resume", i); ok {
+			resumeID = v
 		}
 	}
-	return ""
+	return sessionID, resumeID
 }
 
 // isClaudeExe reports whether a command line's executable (argv[0]) is the
@@ -193,11 +202,13 @@ func runningClaudeProcs() []claudeProc {
 		if m := sockRE.FindStringSubmatch(cmdline); m != nil {
 			prefix = m[1]
 		}
+		sessionID, resumeID := sessionIDsFromCmdline(cmdline)
 		pidNum, _ := strconv.Atoi(pid)
 		procs = append(procs, claudeProc{
 			pid:           pidNum,
 			cwd:           cwdByPid[pid],
-			sessionID:     sessionIDFromCmdline(cmdline),
+			sessionID:     sessionID,
+			resumeID:      resumeID,
 			sessionPrefix: prefix,
 		})
 	}
