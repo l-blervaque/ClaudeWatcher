@@ -16,8 +16,6 @@ import (
 	"github.com/ludo/claudewatcher/internal/version"
 )
 
-const refreshInterval = 2 * time.Second
-
 // Tab indices.
 const (
 	tabSessions  = 0
@@ -30,6 +28,9 @@ const (
 // availableSounds is the ordered list of sound names the user can cycle through.
 // It is the single source of truth for both the options panel and the Update handler.
 var availableSounds = []string{"glass", "ping", "funk"}
+
+// refreshChoices are the intervals (seconds) the Options selector cycles through.
+var refreshChoices = []int{1, 2, 3, 5, 10, 30}
 
 var soundLabels = []string{"Glass", "Ping", "Funk"}
 
@@ -121,7 +122,7 @@ func NewModel() Model {
 }
 
 func (m Model) Init() tea.Cmd {
-	return tea.Batch(loadSessions(m.includeEnded), tick())
+	return tea.Batch(loadSessions(m.includeEnded), tick(m.cfg.RefreshSeconds))
 }
 
 func loadSessions(includeEnded bool) tea.Cmd {
@@ -131,18 +132,18 @@ func loadSessions(includeEnded bool) tea.Cmd {
 	}
 }
 
-func tick() tea.Cmd {
-	return tea.Tick(refreshInterval, func(t time.Time) tea.Msg {
+func tick(seconds int) tea.Cmd {
+	return tea.Tick(time.Duration(seconds)*time.Second, func(t time.Time) tea.Msg {
 		return tickMsg(t)
 	})
 }
 
 // optionsMaxCursor is the highest valid optCursor index in the Options tab.
-// Sons: 0=toggle, 1=sound selector → 2 items
-// Colonnes: 2=ShowCache, 3=ShowCtx, 4=ShowMsgs, 5=ShowAge, 6=ShowModel, 7=ShowBadges → 6 items
-// Display: 8=NerdFonts → 1 item
-// Total indices: 0..8 → 8
-const optionsMaxCursor = 8
+// Sounds: 0=toggle, 1=sound selector
+// Columns: 2=ShowCache, 3=ShowCtx, 4=ShowMsgs, 5=ShowAge, 6=ShowModel, 7=ShowVer, 8=ShowBadges
+// Display: 9=NerdFonts
+// Refresh: 10=interval selector
+const optionsMaxCursor = 10
 
 func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	switch msg := msg.(type) {
@@ -192,9 +193,20 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				case 6:
 					m.cfg.ShowModel = !m.cfg.ShowModel
 				case 7:
-					m.cfg.ShowBadges = !m.cfg.ShowBadges
+					m.cfg.ShowVer = !m.cfg.ShowVer
 				case 8:
+					m.cfg.ShowBadges = !m.cfg.ShowBadges
+				case 9:
 					m.cfg.NerdFonts = !m.cfg.NerdFonts
+				case 10:
+					next := refreshChoices[0]
+					for i, v := range refreshChoices {
+						if v == m.cfg.RefreshSeconds {
+							next = refreshChoices[(i+1)%len(refreshChoices)]
+							break
+						}
+					}
+					m.cfg.RefreshSeconds = next
 				}
 			case "tab":
 				m.activeTab = (m.activeTab + 1) % 3
@@ -301,7 +313,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			return m, nil
 		}
 	case tickMsg:
-		return m, tea.Batch(loadSessions(m.includeEnded), tick())
+		return m, tea.Batch(loadSessions(m.includeEnded), tick(m.cfg.RefreshSeconds))
 	case sessionsMsg:
 		m.err = msg.err
 		newSessions := sortSessions(msg.sessions)
@@ -566,7 +578,8 @@ func (m Model) renderOptions() string {
 		{"Msgs", m.cfg.ShowMsgs, 4},
 		{"Age", m.cfg.ShowAge, 5},
 		{"Model", m.cfg.ShowModel, 6},
-		{"Badges", m.cfg.ShowBadges, 7},
+		{"Ver", m.cfg.ShowVer, 7},
+		{"Badges", m.cfg.ShowBadges, 8},
 	}
 	for _, col := range colOptions {
 		chk := "[ ]"
@@ -587,7 +600,7 @@ func (m Model) renderOptions() string {
 	if m.cfg.NerdFonts {
 		nfCheck = "[x]"
 	}
-	b.WriteString(bars[8])
+	b.WriteString(bars[9])
 	b.WriteString(fmt.Sprintf(" %s Nerd Fonts\n", nfCheck))
 
 	// Visual hint line below the toggle: if the glyph renders as an icon the font works.
@@ -595,6 +608,13 @@ func (m Model) renderOptions() string {
 		glyph := lipgloss.NewStyle().Foreground(lipgloss.Color("#4CAF50")).Bold(true).Render("") // fa-check-circle U+F058
 		b.WriteString(fmt.Sprintf("    → %s if you see an icon, Nerd Fonts work\n", glyph))
 	}
+
+	// --- Refresh section ---
+	b.WriteString("\n")
+	b.WriteString(sectionHeaderStyle.Render("Refresh"))
+	b.WriteString("\n")
+	b.WriteString(bars[10])
+	b.WriteString(fmt.Sprintf(" Interval: %ds (enter to cycle)\n", m.cfg.RefreshSeconds))
 
 	return m.withFooter(b.String())
 }
@@ -607,7 +627,7 @@ func (m Model) renderShortcuts() string {
 
 	// Header line: title on the left, version on the right (same as renderList).
 	appTitle := titleStyle.Render("ClaudeWatcher")
-	ver := dimStyle.Render("v" + version.Version)
+	ver := dimStyle.Render("v" + version.Full())
 	mode := "open"
 	if m.includeEnded {
 		mode = "all"
@@ -696,7 +716,7 @@ func (m Model) renderList() string {
 
 	// Header line: title on the left, version on the right.
 	appTitle := titleStyle.Render("ClaudeWatcher")
-	ver := dimStyle.Render("v" + version.Version)
+	ver := dimStyle.Render("v" + version.Full())
 	mode := "open"
 	if m.includeEnded {
 		mode = "all"
@@ -783,9 +803,10 @@ const (
 	wideColMsg   = 5
 	wideColAgo   = 8
 	wideColModel = 10
+	wideColVer   = 8
 	wideColBadge = 12
-	// gap chars between columns: icon(1) + spaces between each col = 7 separators
-	wideColGaps = 7
+	// gap chars between columns: icon(1) + spaces between each col = 8 separators
+	wideColGaps = 8
 )
 
 // visibleRows returns how many sessions fit on screen given the current layout.
@@ -860,7 +881,7 @@ func (m Model) renderListNarrow() string {
 			leftBudget = 8
 		}
 		title = truncate(title, leftBudget-2) // room for at least 2 dots
-		fillN := leftBudget - len(title) - 1   // 1 = space after title
+		fillN := leftBudget - len(title) - 1  // 1 = space after title
 		if fillN < 1 {
 			fillN = 1
 		}
@@ -886,6 +907,9 @@ func (m Model) renderListNarrow() string {
 			if label := session.ModelLabel(s.Model); label != "" {
 				line3parts = append(line3parts, label)
 			}
+		}
+		if m.cfg.ShowVer && s.CliVersion != "" {
+			line3parts = append(line3parts, "cc "+s.CliVersion)
 		}
 		line3 := "  " + strings.Join(line3parts, " · ")
 
@@ -947,6 +971,9 @@ func (m Model) renderListWide() string {
 	if m.cfg.ShowModel {
 		optColsW += wideColModel + 1
 	}
+	if m.cfg.ShowVer {
+		optColsW += wideColVer + 1
+	}
 	if m.cfg.ShowBadges {
 		optColsW += wideColBadge + 2
 	}
@@ -976,6 +1003,9 @@ func (m Model) renderListWide() string {
 	}
 	if m.cfg.ShowModel {
 		hdr.WriteString(fmt.Sprintf(" %-*s", wideColModel, "MODEL"))
+	}
+	if m.cfg.ShowVer {
+		hdr.WriteString(fmt.Sprintf(" %-*s", wideColVer, "VER"))
 	}
 	if m.cfg.ShowBadges {
 		hdr.WriteString(fmt.Sprintf("  %-*s", wideColBadge, "BADGES"))
@@ -1059,6 +1089,14 @@ func (m Model) renderListWide() string {
 			}
 			row.WriteString(" ")
 			row.WriteString(modelStr)
+		}
+		if m.cfg.ShowVer {
+			verStr := fmt.Sprintf("%-*s", wideColVer, truncate(s.CliVersion, wideColVer))
+			if dim {
+				verStr = dimStyle.Render(verStr)
+			}
+			row.WriteString(" ")
+			row.WriteString(verStr)
 		}
 		if m.cfg.ShowBadges {
 			badges := sessionBadges(s, dim, m.cfg.NerdFonts)
@@ -1144,6 +1182,9 @@ func (m Model) renderDetail() string {
 	b.WriteString("\n")
 	if label := session.ModelLabel(s.Model); label != "" {
 		b.WriteString(fmt.Sprintf("  Model:    %s\n", label))
+	}
+	if s.CliVersion != "" {
+		b.WriteString(fmt.Sprintf("  Claude:   v%s\n", s.CliVersion))
 	}
 	b.WriteString(fmt.Sprintf("  Context:  %s (%d / %d tokens)\n",
 		contextPct(s.ContextTokens, s.Model), s.ContextTokens, session.ContextWindowFor(s.Model)))

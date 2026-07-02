@@ -18,22 +18,28 @@ type Config struct {
 	ShowMsgs   bool `json:"show_msgs"`
 	ShowAge    bool `json:"show_age"`
 	ShowModel  bool `json:"show_model"`
+	ShowVer    bool `json:"show_ver"`
 	ShowBadges bool `json:"show_badges"`
 
 	// NerdFonts enables Nerd Font icons instead of plain Unicode/ASCII symbols.
 	// Opt-in: false by default so plain terminals are not affected.
 	NerdFonts bool `json:"nerd_fonts"`
+
+	// RefreshSeconds is the TUI auto-refresh interval in seconds. Minimum 1.
+	RefreshSeconds int `json:"refresh_seconds"`
 }
 
 var defaults = Config{
-	SoundEnabled: false,
-	SoundName:    "glass",
-	ShowCache:    true,
-	ShowCtx:      true,
-	ShowMsgs:     true,
-	ShowAge:      true,
-	ShowModel:    true,
-	ShowBadges:   true,
+	SoundEnabled:   false,
+	SoundName:      "glass",
+	ShowCache:      true,
+	ShowCtx:        true,
+	ShowMsgs:       true,
+	ShowAge:        true,
+	ShowModel:      true,
+	ShowVer:        true,
+	ShowBadges:     true,
+	RefreshSeconds: 2,
 }
 
 func configPath() (string, error) {
@@ -61,6 +67,11 @@ func Load() (Config, error) {
 	cfg := defaults
 	if err := json.Unmarshal(data, &cfg); err != nil {
 		return defaults, err
+	}
+	// Sanitize: config files written before RefreshSeconds existed decode it
+	// as 0 (json zero value overwrites the seeded default); floor to default.
+	if cfg.RefreshSeconds < 1 {
+		cfg.RefreshSeconds = defaults.RefreshSeconds
 	}
 	return cfg, nil
 }

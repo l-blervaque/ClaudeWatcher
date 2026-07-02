@@ -70,7 +70,7 @@ unzip, and double-click the `.ttf` / `.otf` files to install via Font Book.
 ```bash
 git clone https://github.com/l-blervaque/ClaudeWatcher.git
 cd ClaudeWatcher
-go build -o cw ./cmd/cw
+go build -ldflags "-X github.com/ludo/claudewatcher/internal/version.Commit=$(git rev-parse --short HEAD)" -o cw ./cmd/cw
 ```
 
 Then either run it from the repo:
