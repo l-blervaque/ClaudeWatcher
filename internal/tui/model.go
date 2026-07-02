@@ -140,8 +140,7 @@ func tick(seconds int) tea.Cmd {
 
 // optionsMaxCursor is the highest valid optCursor index in the Options tab.
 // Sounds: 0=toggle, 1=sound selector
-// Columns: 2=ShowCache, 3=ShowCtx, 4=ShowMsgs, 5=ShowAge, 6=ShowModel,
-//          7=ShowVer, 8=ShowBadges
+// Columns: 2=ShowCache, 3=ShowCtx, 4=ShowMsgs, 5=ShowAge, 6=ShowModel, 7=ShowVer, 8=ShowBadges
 // Display: 9=NerdFonts
 // Refresh: 10=interval selector
 const optionsMaxCursor = 10
@@ -882,7 +881,7 @@ func (m Model) renderListNarrow() string {
 			leftBudget = 8
 		}
 		title = truncate(title, leftBudget-2) // room for at least 2 dots
-		fillN := leftBudget - len(title) - 1   // 1 = space after title
+		fillN := leftBudget - len(title) - 1  // 1 = space after title
 		if fillN < 1 {
 			fillN = 1
 		}

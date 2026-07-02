@@ -41,8 +41,8 @@ func TestContextWindowFor(t *testing.T) {
 	}{
 		{"claude-opus-4-5", 1_000_000},
 		{"claude-opus-4-7", 1_000_000},
-		{"claude-sonnet-4-5", 200_000},  // Sonnet 4.5 stays at 200K
-		{"claude-sonnet-4-6", 200_000},  // Sonnet 4.6 stays at 200K (bug fix)
+		{"claude-sonnet-4-5", 200_000}, // Sonnet 4.5 stays at 200K
+		{"claude-sonnet-4-6", 200_000}, // Sonnet 4.6 stays at 200K (bug fix)
 		{"claude-sonnet-4-7", 1_000_000},
 		{"claude-haiku-4-5", 200_000},
 		{"unknown-model", 200_000},
@@ -65,7 +65,7 @@ func TestModelLabel(t *testing.T) {
 		{"claude-sonnet-4-6", "Sonnet 4.6"},
 		{"claude-haiku-4-5-20251001", "Haiku 4.5"}, // date suffix dropped
 		{"claude-fable-5", "Fable 5"},
-		{"opus", "Opus"},   // short alias, no version
+		{"opus", "Opus"}, // short alias, no version
 		{"sonnet", "Sonnet"},
 		{"haiku", "Haiku"},
 		{"<synthetic>", ""},
@@ -100,11 +100,11 @@ func TestScanJSONLCliVersion(t *testing.T) {
 func TestDetermineStatus(t *testing.T) {
 	now := time.Now()
 	cases := []struct {
-		name       string
-		hasProc    bool
-		modAgo     time.Duration
-		lastRole   string
-		want       Status
+		name     string
+		hasProc  bool
+		modAgo   time.Duration
+		lastRole string
+		want     Status
 	}{
 		{"no process → ended", false, time.Minute, "user", StatusEnded},
 		{"fresh activity → active", true, 2 * time.Second, "assistant", StatusActive},

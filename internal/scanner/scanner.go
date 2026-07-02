@@ -450,6 +450,10 @@ func attribute(all []session.Session, procs []claudeProc, now time.Time) {
 			// Hint: --resume forks into a NEW session file, so the named
 			// transcript is usually the dead fork source. Trust it only while
 			// fresh; otherwise recency finds the live forked transcript.
+			// Legacy edge (inherent to this hint model, not triggered by current
+			// fork-behavior Claude): if an old Claude version resumes IN PLACE
+			// (no fork) and then goes idle past resumeFreshWindow, attribution can
+			// flip to a more-recent decoy session in the same cwd.
 			if i, ok := mainByID[p.resumeID]; ok && now.Sub(all[i].LastModified) < resumeFreshWindow {
 				all[i].HasProcess = true
 				mainHasProcess[all[i].ID] = true
