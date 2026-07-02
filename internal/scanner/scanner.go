@@ -396,20 +396,29 @@ func Scan(opts ScanOptions) ([]session.Session, error) {
 	return out, nil
 }
 
+// resumeFreshWindow bounds how long a `--resume <uuid>` hint is trusted as an
+// exact match. Claude Code forks a resumed conversation into a NEW session
+// file, so past this window the named transcript is treated as the dead fork
+// source and the process falls back to per-cwd recency (which finds the live
+// forked file). Mirrors the 5-minute idle threshold in DetermineStatus.
+const resumeFreshWindow = 5 * time.Minute
+
 // attribute marks all[i].HasProcess for the MAIN sessions that have a live
 // `claude` process, then propagates the flag to recent subagents. It is pure
 // over its inputs (no I/O) so attribution can be tested with synthetic data.
 //
 // Two-stage attribution:
-//  1. Exact match — a process that names its own session (a `--resume`/
-//     `--session-id <uuid>`, or a desktop PTY-host socket prefix) marks exactly
-//     that session, so an unrelated transcript in the same folder (e.g. one
-//     just touched by `/exit`, or a more-recent dead transcript) can't steal
-//     it. The full UUID is globally unique, so it matches regardless of cwd.
-//  2. Recency fallback — processes with no recoverable session id (a freshly
-//     started session) are counted per cwd; the top-N most recently modified
-//     unclaimed sessions in that cwd are marked. This is best-effort: with no
-//     identity it can mark a more-recent dead transcript over a quiet live one.
+//  1. Exact match — a `--session-id <uuid>` is the transcript's actual id and
+//     is trusted unconditionally. A `--resume <uuid>` names the FORK SOURCE
+//     (Claude Code copies a resumed conversation into a new session file), so
+//     it is trusted only while that transcript is fresh (resumeFreshWindow);
+//     a stale or missing resume target sends the process to stage 2, where
+//     recency finds the live forked file. A PTY-socket prefix match works as
+//     before, falling back when nothing matches.
+//  2. Recency fallback — remaining processes are counted per cwd; the top-N
+//     most recently modified unclaimed sessions in that cwd are marked. This
+//     is best-effort: with no identity it can mark a more-recent dead
+//     transcript over a quiet live one.
 func attribute(all []session.Session, procs []claudeProc, now time.Time) {
 	byPath := map[string][]int{}
 	mainByID := map[string]int{} // full session ID -> index in all (main sessions only)
@@ -421,22 +430,41 @@ func attribute(all []session.Session, procs []claudeProc, now time.Time) {
 		mainByID[s.ID] = i
 	}
 
-	// Stage 1: exact session-id attribution.
+	// Stage 1: exact identity attribution.
 	mainHasProcess := map[string]bool{} // session ID -> has process (for subagent pass)
-	fallbackCount := map[string]int{}   // cwd -> count of id-less processes
+	fallbackCount := map[string]int{}   // cwd -> count of procs needing recency fallback
 	for _, p := range procs {
 		switch {
 		case p.sessionID != "":
+			// Authoritative: --session-id IS the transcript's id. If the
+			// transcript does not exist yet (first write pending), mark
+			// nothing — it appears on the next tick. Never recency-fallback,
+			// or a brand-new session would steal an unrelated old file.
 			if i, ok := mainByID[p.sessionID]; ok {
 				all[i].HasProcess = true
 				mainHasProcess[all[i].ID] = true
 			}
+		case p.resumeID != "":
+			// Hint: --resume forks into a NEW session file, so the named
+			// transcript is usually the dead fork source. Trust it only while
+			// fresh; otherwise recency finds the live forked transcript.
+			if i, ok := mainByID[p.resumeID]; ok && now.Sub(all[i].LastModified) < resumeFreshWindow {
+				all[i].HasProcess = true
+				mainHasProcess[all[i].ID] = true
+			} else {
+				fallbackCount[p.cwd]++
+			}
 		case p.sessionPrefix != "":
+			matched := false
 			for _, i := range byPath[p.cwd] {
 				if strings.HasPrefix(all[i].ID, p.sessionPrefix) {
 					all[i].HasProcess = true
 					mainHasProcess[all[i].ID] = true
+					matched = true
 				}
+			}
+			if !matched {
+				fallbackCount[p.cwd]++
 			}
 		default:
 			fallbackCount[p.cwd]++
@@ -484,7 +512,7 @@ type ProcDiag struct {
 	PID    int
 	UUID   string // session id recovered from the cmdline, "" if none
 	Cwd    string
-	Status string // matched | no-uuid (recency) | transcript-found-not-marked | UNMATCHED (no transcript)
+	Status string // session-id matched | session-id UNMATCHED (no transcript) | resume matched (fresh) | resume stale → recency | resume UNMATCHED → recency | no-uuid (recency)
 }
 
 // Diagnose reports, for every live claude session process, how the scanner
@@ -510,16 +538,24 @@ func Diagnose() ([]ProcDiag, error) {
 	}
 	out := make([]ProcDiag, 0, len(procs))
 	for _, p := range procs {
-		d := ProcDiag{PID: p.pid, UUID: p.sessionID, Cwd: p.cwd}
+		id := p.sessionID
+		if id == "" {
+			id = p.resumeID
+		}
+		d := ProcDiag{PID: p.pid, UUID: id, Cwd: p.cwd}
 		switch {
-		case p.sessionID == "":
-			d.Status = "no-uuid (recency)"
-		case marked[p.sessionID]:
-			d.Status = "matched"
-		case exists[p.sessionID]:
-			d.Status = "transcript-found-not-marked"
+		case p.sessionID != "" && marked[p.sessionID]:
+			d.Status = "session-id matched"
+		case p.sessionID != "":
+			d.Status = "session-id UNMATCHED (no transcript)"
+		case p.resumeID != "" && marked[p.resumeID]:
+			d.Status = "resume matched (fresh)"
+		case p.resumeID != "" && exists[p.resumeID]:
+			d.Status = "resume stale → recency"
+		case p.resumeID != "":
+			d.Status = "resume UNMATCHED → recency"
 		default:
-			d.Status = "UNMATCHED (no transcript)"
+			d.Status = "no-uuid (recency)"
 		}
 		out = append(out, d)
 	}

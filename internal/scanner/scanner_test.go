@@ -267,3 +267,84 @@ func TestScanReusesCacheForUnchangedFiles(t *testing.T) {
 		t.Fatalf("third scan (changed): expected 2 parses, got %d", got)
 	}
 }
+
+// TestAttributeResumeForkFallsBackToRecency is THE bug that made the fix line
+// unusable: `claude --resume <old-uuid>` forks into a new session file, so the
+// old transcript is dead (stale mtime) while the live conversation writes to a
+// new uuid. The old exact-match logic pinned the process to the dead file
+// (ghost) and never fell back, so the live session showed as ended.
+func TestAttributeResumeForkFallsBackToRecency(t *testing.T) {
+	now := time.Now()
+	const oldID = "88888888-8888-8888-8888-888888888888"  // resumed-from, dead
+	const forkID = "99999999-9999-9999-9999-999999999999" // live fork target
+	all := []session.Session{
+		{ID: oldID, ProjectPath: "/proj4", LastModified: now.Add(-2 * time.Hour)},
+		{ID: forkID, ProjectPath: "/proj4", LastModified: now.Add(-30 * time.Second)},
+	}
+	procs := []claudeProc{{resumeID: oldID, cwd: "/proj4"}}
+
+	attribute(all, procs, now)
+
+	if all[0].HasProcess {
+		t.Error("stale resumed-from transcript must NOT be marked (it is the fork source, dead)")
+	}
+	if !all[1].HasProcess {
+		t.Error("recency fallback must mark the live forked transcript")
+	}
+}
+
+// TestAttributeResumeFreshExactWins: while the resumed transcript is still
+// fresh (old Claude versions that write in place, or the instant right after
+// resume), the exact resume id wins over a more recent decoy in the same cwd.
+func TestAttributeResumeFreshExactWins(t *testing.T) {
+	now := time.Now()
+	const resumedID = "aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa"
+	const decoyID = "bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb"
+	all := []session.Session{
+		{ID: resumedID, ProjectPath: "/proj5", LastModified: now.Add(-30 * time.Second)},
+		{ID: decoyID, ProjectPath: "/proj5", LastModified: now},
+	}
+	procs := []claudeProc{{resumeID: resumedID, cwd: "/proj5"}}
+
+	attribute(all, procs, now)
+
+	if !all[0].HasProcess {
+		t.Error("fresh resumed transcript must be exact-matched")
+	}
+	if all[1].HasProcess {
+		t.Error("decoy must not be marked when the resume id exact-matches a fresh transcript")
+	}
+}
+
+// TestAttributeSessionIDNoTranscriptMarksNothing: a --session-id proc whose
+// transcript does not exist yet (session just started, first write pending)
+// must NOT recency-mark an unrelated file — the transcript appears next tick.
+func TestAttributeSessionIDNoTranscriptMarksNothing(t *testing.T) {
+	now := time.Now()
+	all := []session.Session{
+		{ID: "cccccccc-cccc-cccc-cccc-cccccccccccc", ProjectPath: "/proj6", LastModified: now},
+	}
+	procs := []claudeProc{{sessionID: "dddddddd-dddd-dddd-dddd-dddddddddddd", cwd: "/proj6"}}
+
+	attribute(all, procs, now)
+
+	if all[0].HasProcess {
+		t.Error("an unmatched --session-id proc must not mark an unrelated transcript")
+	}
+}
+
+// TestAttributeResumeUnmatchedFallsBack: a --resume proc whose old transcript
+// was deleted still represents a live session; it falls back to recency.
+func TestAttributeResumeUnmatchedFallsBack(t *testing.T) {
+	now := time.Now()
+	all := []session.Session{
+		{ID: "eeeeeeee-eeee-eeee-eeee-eeeeeeeeeeee", ProjectPath: "/proj7", LastModified: now},
+	}
+	procs := []claudeProc{{resumeID: "ffffffff-ffff-ffff-ffff-ffffffffffff", cwd: "/proj7"}}
+
+	attribute(all, procs, now)
+
+	if !all[0].HasProcess {
+		t.Error("resume proc with no matching transcript must fall back to recency")
+	}
+}
