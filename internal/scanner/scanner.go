@@ -321,6 +321,7 @@ func Scan(opts ScanOptions) ([]session.Session, error) {
 						LastRole:         stats.LastRole,
 						ContextTokens:    stats.ContextTokens,
 						Model:            stats.Model,
+						CliVersion:       stats.CliVersion,
 						LastAssistant:    stats.LastAssistant,
 						IsSubagent:       stats.IsSubagent,
 						ParentID:         f.Name(), // directory name = parent session UUID
@@ -371,6 +372,7 @@ func Scan(opts ScanOptions) ([]session.Session, error) {
 				LastRole:         stats.LastRole,
 				ContextTokens:    stats.ContextTokens,
 				Model:            stats.Model,
+				CliVersion:       stats.CliVersion,
 				LastAssistant:    stats.LastAssistant,
 				IsSubagent:       stats.IsSubagent,
 				CacheEfficiency:  stats.CacheEfficiency,

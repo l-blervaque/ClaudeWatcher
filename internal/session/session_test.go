@@ -1,6 +1,8 @@
 package session
 
 import (
+	"os"
+	"path/filepath"
 	"testing"
 	"time"
 )
@@ -73,6 +75,25 @@ func TestModelLabel(t *testing.T) {
 		if got := ModelLabel(c.id); got != c.want {
 			t.Errorf("ModelLabel(%q) = %q, want %q", c.id, got, c.want)
 		}
+	}
+}
+
+func TestScanJSONLCliVersion(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "s.jsonl")
+	content := `{"type":"user","cwd":"/p","version":"2.1.190","message":{"role":"user","content":"hi"}}
+{"type":"assistant","version":"2.1.198","message":{"role":"assistant","model":"claude-opus-4-8","content":[{"type":"text","text":"yo"}]}}
+`
+	if err := os.WriteFile(path, []byte(content), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	stats, err := ScanJSONL(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	// Last version wins: it reflects the CLI actually running the session.
+	if stats.CliVersion != "2.1.198" {
+		t.Errorf("CliVersion = %q, want %q", stats.CliVersion, "2.1.198")
 	}
 }
 

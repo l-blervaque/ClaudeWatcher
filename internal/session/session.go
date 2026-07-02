@@ -79,6 +79,7 @@ type Session struct {
 	LastRole        string
 	ContextTokens   int
 	Model           string // last assistant message model id (e.g. "claude-opus-4-7")
+	CliVersion      string // Claude CLI version that wrote the session (e.g. "2.1.198")
 	LastAssistant   string
 	Status          Status
 	HasProcess      bool
@@ -180,6 +181,7 @@ type jsonlLine struct {
 	Type    string `json:"type"`
 	Subtype string `json:"subtype"`
 	Cwd     string `json:"cwd"`
+	Version string `json:"version"` // Claude CLI version that wrote this line
 	CustomTitle string `json:"customTitle"`
 	AiTitle     string `json:"aiTitle"`
 	Action  string `json:"action"` // for queue-operation lines: "enqueue" | "dequeue"
@@ -206,6 +208,7 @@ type JSONLStats struct {
 	AiTitle          string  // last auto-generated title
 	ContextTokens    int     // last known total tokens in context (input + cache_read + cache_creation)
 	Model            string  // last assistant message model id
+	CliVersion       string  // Claude CLI version from the last line carrying one
 	LastAssistant    string  // text of the last assistant message
 	IsSubagent       bool    // true if no main-session marker lines found in first 30 lines
 	CacheEfficiency  float64 // cache_read / (input + cache_read + cache_creation), -1 if not calculable
@@ -262,6 +265,11 @@ func ScanJSONL(path string) (JSONLStats, error) {
 
 		if l.Cwd != "" && stats.Cwd == "" {
 			stats.Cwd = l.Cwd
+		}
+		// CLI version: last one wins — a resumed session is rewritten by the
+		// currently-installed CLI, so the last value is the live one.
+		if l.Version != "" {
+			stats.CliVersion = l.Version
 		}
 		// Titles: last one wins (user can /rename multiple times).
 		if l.Type == "custom-title" && l.CustomTitle != "" {
