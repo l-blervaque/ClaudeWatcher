@@ -35,6 +35,8 @@ func TestSaveAndLoad(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Load() after Save error = %v", err)
 	}
+	// Save persists the zero value for RefreshSeconds; Load floors it (<1 → default).
+	want.RefreshSeconds = 2
 	if got != want {
 		t.Errorf("Load() = %+v, want %+v", got, want)
 	}
@@ -50,5 +52,35 @@ func TestSaveCreatesDirectory(t *testing.T) {
 	path := filepath.Join(tmp, ".config", "claudewatcher", "config.json")
 	if _, err := os.Stat(path); os.IsNotExist(err) {
 		t.Errorf("config file not created at %s", path)
+	}
+}
+
+func TestRefreshSecondsDefaultAndFloor(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+
+	// No config file → default 2.
+	cfg, err := config.Load()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cfg.RefreshSeconds != 2 {
+		t.Errorf("default RefreshSeconds = %d, want 2", cfg.RefreshSeconds)
+	}
+
+	// A pre-RefreshSeconds config file (field absent → 0) must sanitize to 2.
+	dir := filepath.Join(home, ".config", "claudewatcher")
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, "config.json"), []byte(`{"sound_enabled":true}`), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	cfg, err = config.Load()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cfg.RefreshSeconds != 2 {
+		t.Errorf("sanitized RefreshSeconds = %d, want 2", cfg.RefreshSeconds)
 	}
 }

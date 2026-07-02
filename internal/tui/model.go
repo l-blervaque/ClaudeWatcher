@@ -16,8 +16,6 @@ import (
 	"github.com/ludo/claudewatcher/internal/version"
 )
 
-const refreshInterval = 2 * time.Second
-
 // Tab indices.
 const (
 	tabSessions  = 0
@@ -30,6 +28,9 @@ const (
 // availableSounds is the ordered list of sound names the user can cycle through.
 // It is the single source of truth for both the options panel and the Update handler.
 var availableSounds = []string{"glass", "ping", "funk"}
+
+// refreshChoices are the intervals (seconds) the Options selector cycles through.
+var refreshChoices = []int{1, 2, 3, 5, 10, 30}
 
 var soundLabels = []string{"Glass", "Ping", "Funk"}
 
@@ -121,7 +122,7 @@ func NewModel() Model {
 }
 
 func (m Model) Init() tea.Cmd {
-	return tea.Batch(loadSessions(m.includeEnded), tick())
+	return tea.Batch(loadSessions(m.includeEnded), tick(m.cfg.RefreshSeconds))
 }
 
 func loadSessions(includeEnded bool) tea.Cmd {
@@ -131,8 +132,8 @@ func loadSessions(includeEnded bool) tea.Cmd {
 	}
 }
 
-func tick() tea.Cmd {
-	return tea.Tick(refreshInterval, func(t time.Time) tea.Msg {
+func tick(seconds int) tea.Cmd {
+	return tea.Tick(time.Duration(seconds)*time.Second, func(t time.Time) tea.Msg {
 		return tickMsg(t)
 	})
 }
@@ -142,7 +143,8 @@ func tick() tea.Cmd {
 // Columns: 2=ShowCache, 3=ShowCtx, 4=ShowMsgs, 5=ShowAge, 6=ShowModel,
 //          7=ShowVer, 8=ShowBadges
 // Display: 9=NerdFonts
-const optionsMaxCursor = 9
+// Refresh: 10=interval selector
+const optionsMaxCursor = 10
 
 func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	switch msg := msg.(type) {
@@ -197,6 +199,15 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 					m.cfg.ShowBadges = !m.cfg.ShowBadges
 				case 9:
 					m.cfg.NerdFonts = !m.cfg.NerdFonts
+				case 10:
+					next := refreshChoices[0]
+					for i, v := range refreshChoices {
+						if v == m.cfg.RefreshSeconds {
+							next = refreshChoices[(i+1)%len(refreshChoices)]
+							break
+						}
+					}
+					m.cfg.RefreshSeconds = next
 				}
 			case "tab":
 				m.activeTab = (m.activeTab + 1) % 3
@@ -303,7 +314,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			return m, nil
 		}
 	case tickMsg:
-		return m, tea.Batch(loadSessions(m.includeEnded), tick())
+		return m, tea.Batch(loadSessions(m.includeEnded), tick(m.cfg.RefreshSeconds))
 	case sessionsMsg:
 		m.err = msg.err
 		newSessions := sortSessions(msg.sessions)
@@ -598,6 +609,13 @@ func (m Model) renderOptions() string {
 		glyph := lipgloss.NewStyle().Foreground(lipgloss.Color("#4CAF50")).Bold(true).Render("") // fa-check-circle U+F058
 		b.WriteString(fmt.Sprintf("    → %s if you see an icon, Nerd Fonts work\n", glyph))
 	}
+
+	// --- Refresh section ---
+	b.WriteString("\n")
+	b.WriteString(sectionHeaderStyle.Render("Refresh"))
+	b.WriteString("\n")
+	b.WriteString(bars[10])
+	b.WriteString(fmt.Sprintf(" Interval: %ds (enter to cycle)\n", m.cfg.RefreshSeconds))
 
 	return m.withFooter(b.String())
 }
