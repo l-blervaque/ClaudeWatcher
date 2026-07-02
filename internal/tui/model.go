@@ -628,7 +628,7 @@ func (m Model) renderShortcuts() string {
 
 	// Header line: title on the left, version on the right (same as renderList).
 	appTitle := titleStyle.Render("ClaudeWatcher")
-	ver := dimStyle.Render("v" + version.Version)
+	ver := dimStyle.Render("v" + version.Full())
 	mode := "open"
 	if m.includeEnded {
 		mode = "all"
@@ -717,7 +717,7 @@ func (m Model) renderList() string {
 
 	// Header line: title on the left, version on the right.
 	appTitle := titleStyle.Render("ClaudeWatcher")
-	ver := dimStyle.Render("v" + version.Version)
+	ver := dimStyle.Render("v" + version.Full())
 	mode := "open"
 	if m.includeEnded {
 		mode = "all"

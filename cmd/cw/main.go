@@ -9,11 +9,18 @@ import (
 
 	"github.com/ludo/claudewatcher/internal/scanner"
 	"github.com/ludo/claudewatcher/internal/tui"
+	"github.com/ludo/claudewatcher/internal/version"
 )
 
 func main() {
 	diagnose := flag.Bool("diagnose", false, "print live-session process attribution and exit (read-only)")
+	showVersion := flag.Bool("version", false, "print version and exit")
 	flag.Parse()
+
+	if *showVersion {
+		fmt.Println("cw v" + version.Full())
+		return
+	}
 
 	if *diagnose {
 		diags, err := scanner.Diagnose()
